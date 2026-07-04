@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Костёр — общайтесь без границ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- LOGIN SCREEN -->
+  <div id="login-screen" class="screen">
+    <div class="login-card">
+      <div class="brand">
+        <span class="flame">🔥</span>
+        <h1>Костёр</h1>
+      </div>
+      <p class="tagline">Место, где собираются друзья — текст, голос и видео в одной комнате.</p>
+
+      <label class="field">
+        <span>Адрес сервера</span>
+        <input id="server-url" type="text" placeholder="напр. https://myfriendtalk.onrender.com" autocomplete="off" />
+      </label>
+
+      <label class="field">
+        <span>Ваше имя</span>
+        <input id="username" type="text" placeholder="Как вас зовут?" autocomplete="off" maxlength="32" />
+      </label>
+
+      <label class="field">
+        <span>Название комнаты</span>
+        <input id="room-id" type="text" placeholder="напр. наша-тусовка" autocomplete="off" maxlength="64" />
+      </label>
+
+      <button id="join-btn" class="btn-primary">Войти к костру</button>
+      <p id="login-error" class="error-text"></p>
+      <p class="hint">Все, кто введёт одинаковый адрес сервера и название комнаты, окажутся в одном разговоре.</p>
+    </div>
+  </div>
+
+  <!-- CHAT SCREEN -->
+  <div id="chat-screen" class="screen hidden">
+    <header class="topbar">
+      <div class="room-info">
+        <span class="flame small">🔥</span>
+        <span id="room-name-label"></span>
+      </div>
+      <div class="controls">
+        <button id="toggle-mic" class="control-btn active" title="Микрофон">🎤</button>
+        <button id="toggle-cam" class="control-btn" title="Камера">📷</button>
+        <button id="leave-btn" class="control-btn danger" title="Выйти">✕</button>
+      </div>
+    </header>
+
+    <main class="main-area">
+      <section class="video-grid" id="video-grid"></section>
+
+      <aside class="side-panel">
+        <div class="people-list" id="people-list">
+          <h3>В комнате</h3>
+          <ul id="people-ul"></ul>
+        </div>
+        <div class="chat-panel">
+          <div class="messages" id="messages"></div>
+          <form id="chat-form" autocomplete="off">
+            <input id="chat-input" type="text" placeholder="Написать сообщение…" maxlength="2000" />
+            <button type="submit">➤</button>
+          </form>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
