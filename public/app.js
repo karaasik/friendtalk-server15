@@ -170,6 +170,7 @@ async function loadFriends() {
 }
 
 function renderFriends({ friends, incoming, outgoing }) {
+  // Incoming requests
   incomingBlock.classList.toggle('hidden', incoming.length === 0);
   incomingList.innerHTML = '';
   incoming.forEach(r => {
@@ -185,6 +186,7 @@ function renderFriends({ friends, incoming, outgoing }) {
     incomingList.appendChild(li);
   });
 
+  // Outgoing requests
   outgoingBlock.classList.toggle('hidden', outgoing.length === 0);
   outgoingList.innerHTML = '';
   outgoing.forEach(r => {
@@ -195,13 +197,18 @@ function renderFriends({ friends, incoming, outgoing }) {
     outgoingList.appendChild(li);
   });
 
+  // Friends
   friendsList.innerHTML = '';
   noFriendsMsg.classList.toggle('hidden', friends.length > 0);
   friends.forEach(f => {
     const li = document.createElement('li');
     li.innerHTML = `
       <span class="friend-name"><span class="avatar-circle">${initial(f.username)}</span>${escapeHtml(f.username)}</span>
-      <button class="pill-btn call" data-id="${f.id}">Позвонить</button>`;
+      <span class="row-actions">
+        <button class="pill-btn message" data-id="${f.id}">Написать</button>
+        <button class="pill-btn call" data-id="${f.id}">Позвонить</button>
+      </span>`;
+    li.querySelector('.message').addEventListener('click', () => startFriendChat(f.id, f.username));
     li.querySelector('.call').addEventListener('click', () => startFriendCall(f.id, f.username));
     friendsList.appendChild(li);
   });
@@ -237,29 +244,40 @@ async function respondRequest(requestId, action) {
   }
 }
 
-function startFriendCall(friendId, friendUsername) {
+function friendRoomId(friendId) {
   const a = Math.min(myUserId, friendId);
   const b = Math.max(myUserId, friendId);
-  const roomId = `dm-${a}-${b}`;
-  joinRoom(roomId, `Звонок с ${friendUsername}`);
+  return `dm-${a}-${b}`;
+}
+
+function startFriendCall(friendId, friendUsername) {
+  joinRoom(friendRoomId(friendId), `Звонок с ${friendUsername}`, { textOnly: false });
+}
+
+function startFriendChat(friendId, friendUsername) {
+  joinRoom(friendRoomId(friendId), `Переписка с ${friendUsername}`, { textOnly: true });
 }
 
 groupRoomForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const roomId = groupRoomInput.value.trim();
   if (!roomId) return;
-  joinRoom(roomId, roomId);
+  joinRoom(roomId, roomId, { textOnly: false });
 });
 
 // ---------- Room / chat / WebRTC ----------
-async function joinRoom(roomId, displayLabel) {
+async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
   myRoom = roomId;
 
-  try {
-    localStream = await getLocalMedia();
-  } catch (e) {
-    console.warn('Не удалось получить микрофон/камеру', e);
+  if (textOnly) {
     localStream = new MediaStream();
+  } else {
+    try {
+      localStream = await getLocalMedia();
+    } catch (e) {
+      console.warn('Не удалось получить микрофон/камеру', e);
+      localStream = new MediaStream();
+    }
   }
 
   socket = io(API_BASE, { transports: ['websocket', 'polling'] });
@@ -271,8 +289,9 @@ async function joinRoom(roomId, displayLabel) {
     peopleUl.innerHTML = '';
     messagesEl.innerHTML = '';
     peers.clear();
+    chatScreen.classList.toggle('text-only', textOnly);
     showScreen(chatScreen);
-    addLocalVideoTile();
+    if (!textOnly) addLocalVideoTile();
   });
 
   registerSocketHandlers();
@@ -484,6 +503,7 @@ leaveBtn.addEventListener('click', () => {
   }
   peers.forEach(({ pc }) => pc.close());
   peers.clear();
+  chatScreen.classList.remove('text-only');
   enterFriendsScreen();
 });
 
