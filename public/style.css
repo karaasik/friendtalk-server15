@@ -369,6 +369,18 @@ h1, h2, h3 { font-family: 'Fraunces', serif; margin: 0; }
   cursor: pointer;
 }
 
+.pill-btn.message { background: var(--bg-panel-2); color: var(--text-main); border: 1px solid var(--line); }
+
+#chat-screen.text-only .video-grid { display: none; }
+#chat-screen.text-only .side-panel {
+  width: 100%;
+  border-left: none;
+  max-width: 640px;
+  margin: 0 auto;
+}
+#chat-screen.text-only #toggle-mic,
+#chat-screen.text-only #toggle-cam { display: none; }
+
 @media (max-width: 760px) {
   .main-area { flex-direction: column; }
   .side-panel { width: 100%; border-left: none; border-top: 1px solid var(--line); }
