@@ -1,16 +1,39 @@
+// FriendTalk client v2 — accounts, friends, rooms with voice/video
+
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' }
 ];
 
-const loginScreen = document.getElementById('login-screen');
-const chatScreen = document.getElementById('chat-screen');
-const serverUrlInput = document.getElementById('server-url');
-const usernameInput = document.getElementById('username');
-const roomIdInput = document.getElementById('room-id');
-const joinBtn = document.getElementById('join-btn');
-const loginError = document.getElementById('login-error');
+const API_BASE = location.origin;
 
+// ---------- Screens ----------
+const authScreen = document.getElementById('auth-screen');
+const friendsScreen = document.getElementById('friends-screen');
+const chatScreen = document.getElementById('chat-screen');
+
+// ---------- Auth elements ----------
+const loginForm = document.getElementById('login-form');
+const registerForm = document.getElementById('register-form');
+const authError = document.getElementById('auth-error');
+const tabBtns = document.querySelectorAll('.tab-btn');
+
+// ---------- Friends elements ----------
+const myUsernameLabel = document.getElementById('my-username-label');
+const logoutBtn = document.getElementById('logout-btn');
+const addFriendForm = document.getElementById('add-friend-form');
+const addFriendInput = document.getElementById('add-friend-input');
+const addFriendMsg = document.getElementById('add-friend-msg');
+const incomingBlock = document.getElementById('incoming-block');
+const incomingList = document.getElementById('incoming-list');
+const outgoingBlock = document.getElementById('outgoing-block');
+const outgoingList = document.getElementById('outgoing-list');
+const friendsList = document.getElementById('friends-list');
+const noFriendsMsg = document.getElementById('no-friends-msg');
+const groupRoomForm = document.getElementById('group-room-form');
+const groupRoomInput = document.getElementById('group-room-input');
+
+// ---------- Chat elements ----------
 const roomNameLabel = document.getElementById('room-name-label');
 const videoGrid = document.getElementById('video-grid');
 const peopleUl = document.getElementById('people-ul');
@@ -21,46 +44,216 @@ const toggleMicBtn = document.getElementById('toggle-mic');
 const toggleCamBtn = document.getElementById('toggle-cam');
 const leaveBtn = document.getElementById('leave-btn');
 
+let authToken = null;
+let myUserId = null;
+let myUsername = '';
+
 let socket = null;
 let localStream = null;
 let micOn = true;
 let camOn = false;
-let myUsername = '';
 let myRoom = '';
-
 const peers = new Map();
 
-if (window.friendtalkConfig && window.friendtalkConfig.serverUrl) {
-  serverUrlInput.value = window.friendtalkConfig.serverUrl;
-}
-try {
-  serverUrlInput.value = serverUrlInput.value || localStorage.getItem('ft_server') || (location.origin.startsWith('http') && location.origin !== 'null' ? location.origin : '');
-  usernameInput.value = localStorage.getItem('ft_username') || '';
-  roomIdInput.value = localStorage.getItem('ft_room') || '';
-} catch (e) { }
+// ---------- Boot ----------
+(function boot() {
+  try {
+    authToken = localStorage.getItem('ft_token');
+    myUsername = localStorage.getItem('ft_username') || '';
+  } catch (e) {}
+  if (authToken) {
+    verifySession();
+  } else {
+    showScreen(authScreen);
+  }
+})();
 
-joinBtn.addEventListener('click', joinRoom);
-[serverUrlInput, usernameInput, roomIdInput].forEach(el => {
-  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom(); });
+function showScreen(el) {
+  [authScreen, friendsScreen, chatScreen].forEach(s => s.classList.add('hidden'));
+  el.classList.remove('hidden');
+}
+
+async function apiRequest(pathName, { method = 'GET', body } = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+  const res = await fetch(API_BASE + pathName, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Ошибка сервера');
+  return data;
+}
+
+async function verifySession() {
+  try {
+    const me = await apiRequest('/api/me');
+    myUserId = me.id;
+    myUsername = me.username;
+    enterFriendsScreen();
+  } catch (e) {
+    authToken = null;
+    try { localStorage.removeItem('ft_token'); } catch (err) {}
+    showScreen(authScreen);
+  }
+}
+
+// ---------- Auth tabs ----------
+tabBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    tabBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const tab = btn.dataset.tab;
+    loginForm.classList.toggle('hidden', tab !== 'login');
+    registerForm.classList.toggle('hidden', tab !== 'register');
+    authError.textContent = '';
+  });
 });
 
-async function joinRoom() {
-  loginError.textContent = '';
-  const serverUrl = serverUrlInput.value.trim().replace(/\/$/, '');
-  const username = usernameInput.value.trim();
-  const roomId = roomIdInput.value.trim();
+loginForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  authError.textContent = '';
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  try {
+    const data = await apiRequest('/api/login', { method: 'POST', body: { username, password } });
+    onAuthSuccess(data);
+  } catch (err) {
+    authError.textContent = err.message;
+  }
+});
 
-  if (!serverUrl) return showLoginError('Укажите адрес сервера.');
-  if (!username) return showLoginError('Введите имя.');
-  if (!roomId) return showLoginError('Введите название комнаты.');
+registerForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  authError.textContent = '';
+  const username = document.getElementById('register-username').value.trim();
+  const password = document.getElementById('register-password').value;
+  try {
+    const data = await apiRequest('/api/register', { method: 'POST', body: { username, password } });
+    onAuthSuccess(data);
+  } catch (err) {
+    authError.textContent = err.message;
+  }
+});
 
-  try { localStorage.setItem('ft_server', serverUrl); localStorage.setItem('ft_username', username); localStorage.setItem('ft_room', roomId); } catch (e) {}
+function onAuthSuccess(data) {
+  authToken = data.token;
+  myUsername = data.username;
+  try {
+    localStorage.setItem('ft_token', authToken);
+    localStorage.setItem('ft_username', myUsername);
+  } catch (e) {}
+  verifySession();
+}
 
-  myUsername = username;
+logoutBtn.addEventListener('click', () => {
+  authToken = null;
+  try { localStorage.removeItem('ft_token'); } catch (e) {}
+  showScreen(authScreen);
+});
+
+// ---------- Friends screen ----------
+function enterFriendsScreen() {
+  myUsernameLabel.textContent = myUsername;
+  showScreen(friendsScreen);
+  loadFriends();
+}
+
+async function loadFriends() {
+  try {
+    const data = await apiRequest('/api/friends');
+    renderFriends(data);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function renderFriends({ friends, incoming, outgoing }) {
+  incomingBlock.classList.toggle('hidden', incoming.length === 0);
+  incomingList.innerHTML = '';
+  incoming.forEach(r => {
+    const li = document.createElement('li');
+    li.innerHTML = `
+      <span class="friend-name"><span class="avatar-circle">${initial(r.username)}</span>${escapeHtml(r.username)}</span>
+      <span class="row-actions">
+        <button class="pill-btn accept" data-id="${r.id}">Принять</button>
+        <button class="pill-btn decline" data-id="${r.id}">Отклонить</button>
+      </span>`;
+    li.querySelector('.accept').addEventListener('click', () => respondRequest(r.id, 'accept'));
+    li.querySelector('.decline').addEventListener('click', () => respondRequest(r.id, 'decline'));
+    incomingList.appendChild(li);
+  });
+
+  outgoingBlock.classList.toggle('hidden', outgoing.length === 0);
+  outgoingList.innerHTML = '';
+  outgoing.forEach(r => {
+    const li = document.createElement('li');
+    li.innerHTML = `
+      <span class="friend-name"><span class="avatar-circle">${initial(r.username)}</span>${escapeHtml(r.username)}</span>
+      <span class="pill-btn pending">Ожидание…</span>`;
+    outgoingList.appendChild(li);
+  });
+
+  friendsList.innerHTML = '';
+  noFriendsMsg.classList.toggle('hidden', friends.length > 0);
+  friends.forEach(f => {
+    const li = document.createElement('li');
+    li.innerHTML = `
+      <span class="friend-name"><span class="avatar-circle">${initial(f.username)}</span>${escapeHtml(f.username)}</span>
+      <button class="pill-btn call" data-id="${f.id}">Позвонить</button>`;
+    li.querySelector('.call').addEventListener('click', () => startFriendCall(f.id, f.username));
+    friendsList.appendChild(li);
+  });
+}
+
+function initial(name) {
+  return (name && name[0] ? name[0] : '?').toUpperCase();
+}
+
+addFriendForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  addFriendMsg.textContent = '';
+  const username = addFriendInput.value.trim();
+  if (!username) return;
+  try {
+    const data = await apiRequest('/api/friends/request', { method: 'POST', body: { username } });
+    addFriendMsg.textContent = data.status === 'accepted'
+      ? `Вы теперь друзья с ${username}!`
+      : `Заявка отправлена пользователю ${username}.`;
+    addFriendInput.value = '';
+    loadFriends();
+  } catch (err) {
+    addFriendMsg.textContent = err.message;
+  }
+});
+
+async function respondRequest(requestId, action) {
+  try {
+    await apiRequest('/api/friends/respond', { method: 'POST', body: { requestId, action } });
+    loadFriends();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function startFriendCall(friendId, friendUsername) {
+  const a = Math.min(myUserId, friendId);
+  const b = Math.max(myUserId, friendId);
+  const roomId = `dm-${a}-${b}`;
+  joinRoom(roomId, `Звонок с ${friendUsername}`);
+}
+
+groupRoomForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const roomId = groupRoomInput.value.trim();
+  if (!roomId) return;
+  joinRoom(roomId, roomId);
+});
+
+// ---------- Room / chat / WebRTC ----------
+async function joinRoom(roomId, displayLabel) {
   myRoom = roomId;
-
-  joinBtn.disabled = true;
-  joinBtn.textContent = 'Подключение…';
 
   try {
     localStream = await getLocalMedia();
@@ -69,44 +262,32 @@ async function joinRoom() {
     localStream = new MediaStream();
   }
 
-  try {
-    socket = io(serverUrl, { transports: ['websocket', 'polling'] });
-  } catch (e) {
-    joinBtn.disabled = false;
-    joinBtn.textContent = 'Войти к костру';
-    return showLoginError('Не удалось подключиться к серверу. Проверьте адрес.');
-  }
-
-  socket.on('connect_error', () => {
-    showLoginError('Не удалось подключиться к серверу. Проверьте адрес и подключение к интернету.');
-    joinBtn.disabled = false;
-    joinBtn.textContent = 'Войти к костру';
-  });
+  socket = io(API_BASE, { transports: ['websocket', 'polling'] });
 
   socket.on('connect', () => {
-    socket.emit('join-room', { roomId, username });
-    enterChatScreen();
+    socket.emit('join-room', { roomId, token: authToken, username: myUsername });
+    roomNameLabel.textContent = displayLabel;
+    videoGrid.innerHTML = '';
+    peopleUl.innerHTML = '';
+    messagesEl.innerHTML = '';
+    peers.clear();
+    showScreen(chatScreen);
+    addLocalVideoTile();
   });
 
   registerSocketHandlers();
-}
-
-function showLoginError(text) {
-  loginError.textContent = text;
 }
 
 async function getLocalMedia() {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
   stream.getVideoTracks().forEach(t => t.enabled = false);
   stream.getAudioTracks().forEach(t => t.enabled = true);
+  camOn = false;
+  micOn = true;
+  toggleMicBtn.classList.add('active');
+  toggleMicBtn.textContent = '🎤';
+  toggleCamBtn.classList.remove('active');
   return stream;
-}
-
-function enterChatScreen() {
-  loginScreen.classList.add('hidden');
-  chatScreen.classList.remove('hidden');
-  roomNameLabel.textContent = myRoom;
-  addLocalVideoTile();
 }
 
 function registerSocketHandlers() {
@@ -208,7 +389,7 @@ function refreshLocalTileMode() {
     if (!avatar) {
       avatar = document.createElement('div');
       avatar.className = 'no-video-avatar';
-      avatar.textContent = (myUsername[0] || '?').toUpperCase();
+      avatar.textContent = initial(myUsername);
       tile.insertBefore(avatar, tile.firstChild);
     }
   }
@@ -292,7 +473,18 @@ toggleCamBtn.addEventListener('click', () => {
 });
 
 leaveBtn.addEventListener('click', () => {
-  if (confirm('Выйти из комнаты?')) window.location.reload();
+  if (socket) {
+    socket.emit('leave-room');
+    socket.disconnect();
+    socket = null;
+  }
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+  }
+  peers.forEach(({ pc }) => pc.close());
+  peers.clear();
+  enterFriendsScreen();
 });
 
 function escapeHtml(str) {
