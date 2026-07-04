@@ -1,7 +1,7 @@
 {
   "name": "friendtalk-server",
-  "version": "1.0.0",
-  "description": "Backend server for FriendTalk",
+  "version": "2.0.0",
+  "description": "Backend server for FriendTalk - accounts, friends, text/voice/video chat",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "socket.io": "^4.7.5"
+    "socket.io": "^4.7.5",
+    "pg": "^8.11.5",
+    "bcryptjs": "^2.4.3"
   }
 }
