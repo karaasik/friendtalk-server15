@@ -68,6 +68,8 @@
         <span id="my-username-label"></span>
       </div>
       <div class="controls">
+        <button id="support-btn" class="control-btn" title="Поддержка">🆘</button>
+        <button id="saved-btn" class="control-btn" title="Избранное">⭐</button>
         <button id="notif-btn" class="control-btn" title="Включить уведомления">🔔</button>
         <button id="theme-btn" class="control-btn" title="Светлая/тёмная тема">🌙</button>
         <button id="logout-btn" class="control-btn" title="Выйти">⎋</button>
@@ -119,6 +121,7 @@
       <div class="controls">
         <button id="toggle-mic" class="control-btn active" title="Микрофон">🎤</button>
         <button id="toggle-cam" class="control-btn" title="Камера">📷</button>
+        <button id="toggle-screen" class="control-btn" title="Демонстрация экрана">🖥️</button>
         <button id="theme-btn-chat" class="control-btn" title="Светлая/тёмная тема">🌙</button>
         <button id="leave-btn" class="control-btn danger" title="Назад к друзьям">✕</button>
       </div>
@@ -135,11 +138,31 @@
         <div class="chat-panel">
           <div class="messages" id="messages"></div>
           <form id="chat-form" autocomplete="off">
+            <input id="file-input" type="file" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.zip" class="hidden" />
+            <button type="button" id="attach-btn" title="Прикрепить файл">📎</button>
             <input id="chat-input" type="text" placeholder="Написать сообщение…" maxlength="2000" />
+            <button type="button" id="voice-btn" title="Голосовое сообщение">🎙️</button>
             <button type="submit">➤</button>
           </form>
         </div>
       </aside>
+    </main>
+  </div>
+
+  <!-- SAVED MESSAGES SCREEN ("Избранное") -->
+  <div id="saved-screen" class="screen hidden">
+    <header class="topbar">
+      <div class="room-info">
+        <span class="flame small">⭐</span>
+        <span>Избранное</span>
+      </div>
+      <div class="controls">
+        <button id="saved-back-btn" class="control-btn danger" title="Назад к друзьям">✕</button>
+      </div>
+    </header>
+    <main class="saved-main">
+      <div class="messages" id="saved-messages"></div>
+      <p id="no-saved-msg" class="hint hidden">Пока ничего не сохранено. Нажмите ⭐ рядом с сообщением в чате, чтобы добавить его сюда — эти сообщения видите только вы.</p>
     </main>
   </div>
 
