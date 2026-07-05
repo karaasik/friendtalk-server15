@@ -21,6 +21,9 @@ const tabBtns = document.querySelectorAll('.tab-btn');
 // ---------- Friends elements ----------
 const myUsernameLabel = document.getElementById('my-username-label');
 const logoutBtn = document.getElementById('logout-btn');
+const notifBtn = document.getElementById('notif-btn');
+const themeBtn = document.getElementById('theme-btn');
+const themeBtnChat = document.getElementById('theme-btn-chat');
 const addFriendForm = document.getElementById('add-friend-form');
 const addFriendInput = document.getElementById('add-friend-input');
 const addFriendMsg = document.getElementById('add-friend-msg');
@@ -32,6 +35,12 @@ const friendsList = document.getElementById('friends-list');
 const noFriendsMsg = document.getElementById('no-friends-msg');
 const groupRoomForm = document.getElementById('group-room-form');
 const groupRoomInput = document.getElementById('group-room-input');
+
+// ---------- Call banner ----------
+const callBanner = document.getElementById('call-banner');
+const callBannerText = document.getElementById('call-banner-text');
+const callAcceptBtn = document.getElementById('call-accept-btn');
+const callDeclineBtn = document.getElementById('call-decline-btn');
 
 // ---------- Chat elements ----------
 const roomNameLabel = document.getElementById('room-name-label');
@@ -53,7 +62,60 @@ let localStream = null;
 let micOn = true;
 let camOn = false;
 let myRoom = '';
+let activeRoomId = null; // room currently open in the chat screen, or null when on friends screen
 const peers = new Map();
+const unreadCounts = new Map(); // friendId -> count
+let friendsCache = []; // last loaded friends list, used to resolve notifications to names
+
+// ---------- Theme ----------
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const icon = theme === 'light' ? '☀️' : '🌙';
+  if (themeBtn) themeBtn.textContent = icon;
+  if (themeBtnChat) themeBtnChat.textContent = icon;
+}
+
+function initTheme() {
+  let theme = 'dark';
+  try { theme = localStorage.getItem('ft_theme') || 'dark'; } catch (e) {}
+  applyTheme(theme);
+}
+
+function toggleTheme() {
+  const current = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+  const next = current === 'light' ? 'dark' : 'light';
+  applyTheme(next);
+  try { localStorage.setItem('ft_theme', next); } catch (e) {}
+}
+
+if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
+if (themeBtnChat) themeBtnChat.addEventListener('click', toggleTheme);
+initTheme();
+
+// ---------- Notifications ----------
+function updateNotifBtn() {
+  if (!notifBtn) return;
+  const granted = 'Notification' in window && Notification.permission === 'granted';
+  notifBtn.textContent = granted ? '🔔' : '🔕';
+  notifBtn.title = granted ? 'Уведомления включены' : 'Включить уведомления';
+}
+
+if (notifBtn) {
+  notifBtn.addEventListener('click', async () => {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'default') {
+      await Notification.requestPermission();
+    }
+    updateNotifBtn();
+  });
+  updateNotifBtn();
+}
+
+function showNotification(title, body) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try { new Notification(title, { body, icon: undefined }); } catch (e) { /* ignore */ }
+  }
+}
 
 // ---------- Boot ----------
 (function boot() {
@@ -91,6 +153,7 @@ async function verifySession() {
     const me = await apiRequest('/api/me');
     myUserId = me.id;
     myUsername = me.username;
+    connectPersistentSocket();
     enterFriendsScreen();
   } catch (e) {
     authToken = null;
@@ -98,6 +161,64 @@ async function verifySession() {
     showScreen(authScreen);
   }
 }
+
+// A single socket connection lives for the whole session (from login until logout),
+// so we can receive call/message notifications even while just browsing the friends screen.
+function connectPersistentSocket() {
+  if (socket) return;
+  socket = io(API_BASE, { transports: ['websocket', 'polling'] });
+
+  socket.on('connect', () => {
+    socket.emit('authenticate', { token: authToken });
+  });
+
+  socket.on('incoming-call', ({ roomId, fromUsername }) => {
+    showIncomingCall(roomId, fromUsername);
+    showNotification('Входящий звонок', `${fromUsername} звонит вам`);
+  });
+
+  socket.on('notify-message', ({ roomId, fromUsername, preview }) => {
+    if (activeRoomId === roomId) return; // already looking at this conversation
+    const friendId = friendIdFromRoom(roomId);
+    if (friendId != null) {
+      unreadCounts.set(friendId, (unreadCounts.get(friendId) || 0) + 1);
+      renderFriendsFromCache();
+    }
+    showNotification(`Сообщение от ${fromUsername}`, preview);
+  });
+
+  registerSocketHandlers();
+}
+
+function friendIdFromRoom(roomId) {
+  if (!roomId.startsWith('dm-')) return null;
+  const parts = roomId.slice(3).split('-').map(Number);
+  if (parts.length !== 2) return null;
+  return parts[0] === myUserId ? parts[1] : parts[0];
+}
+
+let pendingCallRoomId = null;
+
+function showIncomingCall(roomId, fromUsername) {
+  pendingCallRoomId = roomId;
+  callBannerText.textContent = `${fromUsername} звонит вам`;
+  callBanner.classList.remove('hidden');
+}
+
+callAcceptBtn.addEventListener('click', () => {
+  if (!pendingCallRoomId) return;
+  const roomId = pendingCallRoomId;
+  callBanner.classList.add('hidden');
+  pendingCallRoomId = null;
+  const friendId = friendIdFromRoom(roomId);
+  const friend = friendsCache.find(f => f.id === friendId);
+  joinRoom(roomId, friend ? `Звонок с ${friend.username}` : 'Звонок', { textOnly: false });
+});
+
+callDeclineBtn.addEventListener('click', () => {
+  callBanner.classList.add('hidden');
+  pendingCallRoomId = null;
+});
 
 // ---------- Auth tabs ----------
 tabBtns.forEach(btn => {
@@ -150,6 +271,11 @@ function onAuthSuccess(data) {
 logoutBtn.addEventListener('click', () => {
   authToken = null;
   try { localStorage.removeItem('ft_token'); } catch (e) {}
+  if (socket) {
+    socket.disconnect();
+    socket = null;
+  }
+  unreadCounts.clear();
   showScreen(authScreen);
 });
 
@@ -163,10 +289,15 @@ function enterFriendsScreen() {
 async function loadFriends() {
   try {
     const data = await apiRequest('/api/friends');
+    friendsCache = data.friends;
     renderFriends(data);
   } catch (e) {
     console.error(e);
   }
+}
+
+function renderFriendsFromCache() {
+  renderFriendsList(friendsCache);
 }
 
 function renderFriends({ friends, incoming, outgoing }) {
@@ -197,13 +328,18 @@ function renderFriends({ friends, incoming, outgoing }) {
     outgoingList.appendChild(li);
   });
 
-  // Friends
+  renderFriendsList(friends);
+}
+
+function renderFriendsList(friends) {
   friendsList.innerHTML = '';
   noFriendsMsg.classList.toggle('hidden', friends.length > 0);
   friends.forEach(f => {
     const li = document.createElement('li');
+    const unread = unreadCounts.get(f.id) || 0;
+    const badge = unread > 0 ? `<span class="unread-badge">${unread}</span>` : '';
     li.innerHTML = `
-      <span class="friend-name"><span class="avatar-circle">${initial(f.username)}</span>${escapeHtml(f.username)}</span>
+      <span class="friend-name"><span class="avatar-circle">${initial(f.username)}</span>${escapeHtml(f.username)}${badge}</span>
       <span class="row-actions">
         <button class="pill-btn message" data-id="${f.id}">Написать</button>
         <button class="pill-btn call" data-id="${f.id}">Позвонить</button>
@@ -268,6 +404,13 @@ groupRoomForm.addEventListener('submit', (e) => {
 // ---------- Room / chat / WebRTC ----------
 async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
   myRoom = roomId;
+  activeRoomId = roomId;
+
+  const friendId = friendIdFromRoom(roomId);
+  if (friendId != null) {
+    unreadCounts.delete(friendId);
+    renderFriendsFromCache();
+  }
 
   if (textOnly) {
     localStream = new MediaStream();
@@ -280,21 +423,36 @@ async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
     }
   }
 
-  socket = io(API_BASE, { transports: ['websocket', 'polling'] });
+  videoGrid.innerHTML = '';
+  peopleUl.innerHTML = '';
+  messagesEl.innerHTML = '';
+  peers.clear();
+  roomNameLabel.textContent = displayLabel;
+  chatScreen.classList.toggle('text-only', textOnly);
+  showScreen(chatScreen);
+  if (!textOnly) addLocalVideoTile();
 
-  socket.on('connect', () => {
-    socket.emit('join-room', { roomId, token: authToken, username: myUsername });
-    roomNameLabel.textContent = displayLabel;
-    videoGrid.innerHTML = '';
-    peopleUl.innerHTML = '';
-    messagesEl.innerHTML = '';
-    peers.clear();
-    chatScreen.classList.toggle('text-only', textOnly);
-    showScreen(chatScreen);
-    if (!textOnly) addLocalVideoTile();
-  });
+  // Load persisted history for this room before live messages start arriving.
+  try {
+    const history = await apiRequest('/api/messages?roomId=' + encodeURIComponent(roomId));
+    history.messages.forEach(addMessage);
+  } catch (e) {
+    console.error('Не удалось загрузить историю сообщений', e);
+  }
 
-  registerSocketHandlers();
+  socket.emit('join-room', { roomId, token: authToken, username: myUsername, intent: textOnly ? 'text' : 'call' });
+}
+
+function leaveCurrentRoom() {
+  if (socket) socket.emit('leave-room');
+  activeRoomId = null;
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+  }
+  peers.forEach(({ pc }) => pc.close());
+  peers.clear();
+  chatScreen.classList.remove('text-only');
 }
 
 async function getLocalMedia() {
@@ -492,18 +650,7 @@ toggleCamBtn.addEventListener('click', () => {
 });
 
 leaveBtn.addEventListener('click', () => {
-  if (socket) {
-    socket.emit('leave-room');
-    socket.disconnect();
-    socket = null;
-  }
-  if (localStream) {
-    localStream.getTracks().forEach(t => t.stop());
-    localStream = null;
-  }
-  peers.forEach(({ pc }) => pc.close());
-  peers.clear();
-  chatScreen.classList.remove('text-only');
+  leaveCurrentRoom();
   enterFriendsScreen();
 });
 
