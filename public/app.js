@@ -2,7 +2,22 @@
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' }
+  { urls: 'stun:stun1.l.google.com:19302' },
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  }
 ];
 
 const API_BASE = location.origin;
@@ -11,6 +26,7 @@ const API_BASE = location.origin;
 const authScreen = document.getElementById('auth-screen');
 const friendsScreen = document.getElementById('friends-screen');
 const chatScreen = document.getElementById('chat-screen');
+const savedScreen = document.getElementById('saved-screen');
 
 // ---------- Auth elements ----------
 const loginForm = document.getElementById('login-form');
@@ -24,6 +40,11 @@ const logoutBtn = document.getElementById('logout-btn');
 const notifBtn = document.getElementById('notif-btn');
 const themeBtn = document.getElementById('theme-btn');
 const themeBtnChat = document.getElementById('theme-btn-chat');
+const supportBtn = document.getElementById('support-btn');
+const savedBtn = document.getElementById('saved-btn');
+const savedBackBtn = document.getElementById('saved-back-btn');
+const savedMessagesEl = document.getElementById('saved-messages');
+const noSavedMsg = document.getElementById('no-saved-msg');
 const addFriendForm = document.getElementById('add-friend-form');
 const addFriendInput = document.getElementById('add-friend-input');
 const addFriendMsg = document.getElementById('add-friend-msg');
@@ -51,6 +72,10 @@ const chatForm = document.getElementById('chat-form');
 const chatInput = document.getElementById('chat-input');
 const toggleMicBtn = document.getElementById('toggle-mic');
 const toggleCamBtn = document.getElementById('toggle-cam');
+const toggleScreenBtn = document.getElementById('toggle-screen');
+const attachBtn = document.getElementById('attach-btn');
+const fileInput = document.getElementById('file-input');
+const voiceBtn = document.getElementById('voice-btn');
 const leaveBtn = document.getElementById('leave-btn');
 
 let authToken = null;
@@ -131,7 +156,7 @@ function showNotification(title, body) {
 })();
 
 function showScreen(el) {
-  [authScreen, friendsScreen, chatScreen].forEach(s => s.classList.add('hidden'));
+  [authScreen, friendsScreen, chatScreen, savedScreen].forEach(s => s.classList.add('hidden'));
   el.classList.remove('hidden');
 }
 
@@ -284,6 +309,80 @@ function enterFriendsScreen() {
   myUsernameLabel.textContent = myUsername;
   showScreen(friendsScreen);
   loadFriends();
+}
+
+supportBtn.addEventListener('click', async () => {
+  try {
+    const data = await apiRequest('/api/support');
+    if (!data.available) {
+      alert('Поддержка пока недоступна. Попробуйте позже.');
+      return;
+    }
+    startFriendChat(data.id, 'Поддержка');
+  } catch (e) {
+    console.error(e);
+  }
+});
+
+savedBtn.addEventListener('click', () => {
+  showScreen(savedScreen);
+  loadSaved();
+});
+
+savedBackBtn.addEventListener('click', () => {
+  enterFriendsScreen();
+});
+
+async function loadSaved() {
+  try {
+    const data = await apiRequest('/api/saved');
+    renderSaved(data.saved);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function renderSaved(saved) {
+  savedMessagesEl.innerHTML = '';
+  noSavedMsg.classList.toggle('hidden', saved.length > 0);
+  saved.forEach(item => {
+    const div = document.createElement('div');
+    div.className = 'msg';
+    const time = item.time ? new Date(item.time).toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+    let html = `<span class="author">${escapeHtml(item.username)}</span>${escapeHtml(item.text || '')}<span class="time">${time}</span>`;
+    div.innerHTML = html;
+    if (item.attachment) {
+      div.appendChild(renderAttachment(item.attachment));
+    }
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'save-star-btn';
+    removeBtn.textContent = '✕ убрать';
+    removeBtn.addEventListener('click', async () => {
+      try {
+        await apiRequest('/api/saved/' + item.id, { method: 'DELETE' });
+        loadSaved();
+      } catch (e) { console.error(e); }
+    });
+    div.appendChild(document.createElement('br'));
+    div.appendChild(removeBtn);
+    savedMessagesEl.appendChild(div);
+  });
+}
+
+async function saveMessageToFavorites(msg) {
+  try {
+    await apiRequest('/api/saved', {
+      method: 'POST',
+      body: {
+        username: msg.username,
+        text: msg.text || '',
+        time: msg.time,
+        attachment: msg.attachment || null
+      }
+    });
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 async function loadFriends() {
@@ -587,7 +686,9 @@ function addRemoteVideoTile(peerId, username, stream) {
   const video = tile.querySelector('video');
   video.srcObject = stream;
 
-  const hasVideoTrack = stream.getVideoTracks().some(t => t.enabled);
+  // Note: on the receiving end, track.enabled is a local-only flag and does not
+  // reflect whether the sender is actually providing video — track.muted does.
+  const hasVideoTrack = stream.getVideoTracks().some(t => !t.muted);
   video.style.display = hasVideoTrack ? '' : 'none';
 
   stream.getVideoTracks().forEach(t => {
@@ -621,17 +722,70 @@ chatForm.addEventListener('submit', (e) => {
   chatInput.value = '';
 });
 
+function renderAttachment(attachment) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-attachment';
+  const type = attachment.mimeType || '';
+  if (type.startsWith('image/')) {
+    const img = document.createElement('img');
+    img.src = attachment.dataUrl;
+    img.alt = attachment.filename || 'изображение';
+    wrap.appendChild(img);
+  } else if (type.startsWith('video/')) {
+    const video = document.createElement('video');
+    video.src = attachment.dataUrl;
+    video.controls = true;
+    wrap.appendChild(video);
+  } else if (type.startsWith('audio/')) {
+    const audio = document.createElement('audio');
+    audio.src = attachment.dataUrl;
+    audio.controls = true;
+    wrap.appendChild(audio);
+  } else {
+    const a = document.createElement('a');
+    a.className = 'file-link';
+    a.href = attachment.dataUrl;
+    a.download = attachment.filename || 'file';
+    a.textContent = '📎 ' + (attachment.filename || 'Файл');
+    wrap.appendChild(a);
+  }
+  return wrap;
+}
+
 function addMessage(msg) {
-  const div = document.createElement('div');
-  const time = new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   if (msg.system) {
+    const div = document.createElement('div');
     div.className = 'msg system';
     div.textContent = msg.text;
-  } else {
-    div.className = 'msg';
-    div.innerHTML = `<span class="author">${escapeHtml(msg.username)}</span>${escapeHtml(msg.text)}<span class="time">${time}</span>`;
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return;
   }
-  messagesEl.appendChild(div);
+
+  const time = new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const row = document.createElement('div');
+  row.className = 'msg-row';
+
+  const div = document.createElement('div');
+  div.className = 'msg';
+  if (msg.text) {
+    div.innerHTML = `<span class="author">${escapeHtml(msg.username)}</span>${escapeHtml(msg.text)}<span class="time">${time}</span>`;
+  } else {
+    div.innerHTML = `<span class="author">${escapeHtml(msg.username)}</span><span class="time">${time}</span>`;
+  }
+  if (msg.attachment) {
+    div.appendChild(renderAttachment(msg.attachment));
+  }
+
+  const star = document.createElement('button');
+  star.className = 'save-star-btn';
+  star.title = 'Сохранить в избранное';
+  star.textContent = '⭐';
+  star.addEventListener('click', () => saveMessageToFavorites(msg));
+
+  row.appendChild(div);
+  row.appendChild(star);
+  messagesEl.appendChild(row);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
@@ -649,7 +803,129 @@ toggleCamBtn.addEventListener('click', () => {
   refreshLocalTileMode();
 });
 
+// ---------- Screen sharing ----------
+let screenStream = null;
+let cameraVideoTrack = null;
+
+toggleScreenBtn.addEventListener('click', async () => {
+  if (screenStream) {
+    stopScreenShare();
+    return;
+  }
+  try {
+    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+  } catch (e) {
+    return; // user cancelled the picker
+  }
+
+  const screenTrack = screenStream.getVideoTracks()[0];
+  cameraVideoTrack = localStream.getVideoTracks()[0] || null;
+
+  peers.forEach(({ pc }) => {
+    const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+    if (sender) sender.replaceTrack(screenTrack);
+  });
+
+  if (cameraVideoTrack) localStream.removeTrack(cameraVideoTrack);
+  localStream.addTrack(screenTrack);
+
+  camOn = true;
+  refreshLocalTileMode();
+  toggleScreenBtn.classList.add('active');
+  toggleScreenBtn.title = 'Остановить демонстрацию экрана';
+
+  screenTrack.onended = () => stopScreenShare();
+});
+
+function stopScreenShare() {
+  if (!screenStream) return;
+  const screenTrack = screenStream.getVideoTracks()[0];
+
+  localStream.removeTrack(screenTrack);
+  screenTrack.stop();
+
+  peers.forEach(({ pc }) => {
+    const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+    if (sender) sender.replaceTrack(cameraVideoTrack || null);
+  });
+
+  if (cameraVideoTrack) {
+    localStream.addTrack(cameraVideoTrack);
+    cameraVideoTrack.enabled = camOn;
+  } else {
+    camOn = false;
+  }
+
+  screenStream = null;
+  toggleScreenBtn.classList.remove('active');
+  toggleScreenBtn.title = 'Демонстрация экрана';
+  refreshLocalTileMode();
+}
+
+// ---------- File / photo / video attachments ----------
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5MB
+
+attachBtn.addEventListener('click', () => fileInput.click());
+
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  fileInput.value = '';
+  if (!file) return;
+  sendFileAttachment(file);
+});
+
+function sendFileAttachment(file) {
+  if (!socket || !activeRoomId) return;
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    alert('Файл слишком большой. Максимум 5 МБ.');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    socket.emit('chat-file', {
+      dataUrl: reader.result,
+      mimeType: file.type,
+      filename: file.name
+    });
+  };
+  reader.readAsDataURL(file);
+}
+
+// ---------- Voice messages ----------
+let mediaRecorder = null;
+let recordedChunks = [];
+let recordingStream = null;
+
+voiceBtn.addEventListener('click', async () => {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    return;
+  }
+  try {
+    recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    alert('Не удалось получить доступ к микрофону.');
+    return;
+  }
+  recordedChunks = [];
+  mediaRecorder = new MediaRecorder(recordingStream);
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    recordingStream.getTracks().forEach(t => t.stop());
+    voiceBtn.classList.remove('recording');
+    voiceBtn.title = 'Голосовое сообщение';
+    const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+    if (blob.size === 0) return;
+    const file = new File([blob], 'voice-message.webm', { type: 'audio/webm' });
+    sendFileAttachment(file);
+  };
+  mediaRecorder.start();
+  voiceBtn.classList.add('recording');
+  voiceBtn.title = 'Остановить запись';
+});
+
 leaveBtn.addEventListener('click', () => {
+  if (screenStream) stopScreenShare();
   leaveCurrentRoom();
   enterFriendsScreen();
 });
