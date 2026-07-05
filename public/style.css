@@ -11,6 +11,23 @@
   --online: #5ee6a8;
 }
 
+html[data-theme="light"] {
+  --bg-deep: #f4f1ea;
+  --bg-panel: #ffffff;
+  --bg-panel-2: #f0ede4;
+  --line: #ddd6c7;
+  --text-main: #2b2620;
+  --text-dim: #7a7264;
+  --flame: #d9822b;
+  --flame-hot: #e8622f;
+  --danger: #d1453b;
+  --online: #1f9d63;
+}
+
+html[data-theme="light"] body {
+  background: radial-gradient(ellipse at 50% -10%, #fbf8f1 0%, var(--bg-deep) 60%);
+}
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -26,6 +43,7 @@ h1, h2, h3 { font-family: 'Fraunces', serif; margin: 0; }
 .screen { min-height: 100vh; width: 100%; }
 .hidden { display: none !important; }
 
+/* ---------- AUTH ---------- */
 #auth-screen {
   display: flex;
   align-items: center;
@@ -138,6 +156,7 @@ h1, h2, h3 { font-family: 'Fraunces', serif; margin: 0; }
   line-height: 1.5;
 }
 
+/* ---------- TOPBAR (shared) ---------- */
 .topbar {
   display: flex;
   align-items: center;
@@ -164,6 +183,7 @@ h1, h2, h3 { font-family: 'Fraunces', serif; margin: 0; }
 .control-btn.danger { background: var(--danger); opacity: 1; }
 .control-btn:hover { filter: brightness(1.1); }
 
+/* ---------- FRIENDS SCREEN ---------- */
 .friends-main {
   display: flex;
   gap: 24px;
@@ -252,6 +272,7 @@ h1, h2, h3 { font-family: 'Fraunces', serif; margin: 0; }
 .pill-btn.call { background: var(--flame); color: #1a1204; }
 .pill-btn.pending { background: var(--bg-panel-2); color: var(--text-dim); cursor: default; }
 
+/* ---------- CHAT ---------- */
 #chat-screen { display: flex; flex-direction: column; min-height: 100vh; }
 
 .main-area {
@@ -370,6 +391,34 @@ h1, h2, h3 { font-family: 'Fraunces', serif; margin: 0; }
 }
 
 .pill-btn.message { background: var(--bg-panel-2); color: var(--text-main); border: 1px solid var(--line); }
+
+.unread-badge {
+  background: var(--flame-hot);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 1px 7px;
+  margin-left: 8px;
+}
+
+.call-banner {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background: var(--bg-panel);
+  border: 1px solid var(--flame);
+  box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+  border-radius: 14px;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 600;
+}
+.call-banner.hidden { display: none !important; }
 
 #chat-screen.text-only .video-grid { display: none; }
 #chat-screen.text-only .side-panel {
