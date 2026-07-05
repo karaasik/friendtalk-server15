@@ -11,7 +11,10 @@ const bcrypt = require('bcryptjs');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, {
+  cors: { origin: '*' },
+  maxHttpBufferSize: 8 * 1024 * 1024 // allow attachments up to ~8MB (base64-encoded)
+});
 
 const PORT = process.env.PORT || 3000;
 
@@ -58,11 +61,30 @@ async function initDb() {
       from_user INTEGER,
       from_username TEXT NOT NULL,
       content TEXT NOT NULL,
+      attachment_data TEXT,
+      attachment_type TEXT,
+      attachment_name TEXT,
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_data TEXT;`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_type TEXT;`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT;`);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, created_at);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS saved_messages (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      from_username TEXT NOT NULL,
+      content TEXT,
+      attachment_data TEXT,
+      attachment_type TEXT,
+      attachment_name TEXT,
+      original_time BIGINT,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
   `);
   console.log('База данных готова.');
 }
@@ -244,14 +266,26 @@ app.post('/api/friends/respond', requireAuth, async (req, res) => {
   }
 });
 
+app.get('/api/support', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, username FROM users WHERE username = $1', [SUPPORT_USERNAME]);
+    if (result.rows.length === 0) return res.json({ available: false });
+    res.json({ available: true, id: result.rows[0].id, username: result.rows[0].username });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
 app.get('/api/friends', requireAuth, async (req, res) => {
   try {
     const friends = await pool.query(
       `SELECT u.id, u.username FROM friend_requests fr
        JOIN users u ON u.id = CASE WHEN fr.from_user = $1 THEN fr.to_user ELSE fr.from_user END
        WHERE fr.status = 'accepted' AND (fr.from_user = $1 OR fr.to_user = $1)
+         AND u.username != $2
        ORDER BY u.username`,
-      [req.userId]
+      [req.userId, SUPPORT_USERNAME]
     );
 
     const incoming = await pool.query(
@@ -287,7 +321,7 @@ app.get('/api/messages', requireAuth, async (req, res) => {
     if (!roomId) return res.status(400).json({ error: 'Не указана комната' });
 
     const result = await pool.query(
-      `SELECT from_username, content, created_at FROM messages
+      `SELECT from_username, content, attachment_data, attachment_type, attachment_name, created_at FROM messages
        WHERE room_id = $1
        ORDER BY created_at ASC
        LIMIT 300`,
@@ -297,12 +331,77 @@ app.get('/api/messages', requireAuth, async (req, res) => {
       messages: result.rows.map(r => ({
         username: r.from_username,
         text: r.content,
-        time: new Date(r.created_at).getTime()
+        time: new Date(r.created_at).getTime(),
+        attachment: r.attachment_data ? {
+          dataUrl: r.attachment_data,
+          mimeType: r.attachment_type,
+          filename: r.attachment_name
+        } : null
       }))
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Не удалось загрузить сообщения' });
+  }
+});
+
+// ---------- Saved messages ("избранное") — private per user ----------
+app.get('/api/saved', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, from_username, content, attachment_data, attachment_type, attachment_name, original_time
+       FROM saved_messages WHERE user_id = $1 ORDER BY created_at DESC`,
+      [req.userId]
+    );
+    res.json({
+      saved: result.rows.map(r => ({
+        id: r.id,
+        username: r.from_username,
+        text: r.content,
+        time: r.original_time,
+        attachment: r.attachment_data ? {
+          dataUrl: r.attachment_data,
+          mimeType: r.attachment_type,
+          filename: r.attachment_name
+        } : null
+      }))
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось загрузить избранное' });
+  }
+});
+
+app.post('/api/saved', requireAuth, async (req, res) => {
+  try {
+    const { username, text, time, attachment } = req.body || {};
+    await pool.query(
+      `INSERT INTO saved_messages (user_id, from_username, content, attachment_data, attachment_type, attachment_name, original_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        req.userId,
+        String(username || '').slice(0, 32),
+        String(text || '').slice(0, 2000),
+        attachment ? attachment.dataUrl : null,
+        attachment ? attachment.mimeType : null,
+        attachment ? attachment.filename : null,
+        time || Date.now()
+      ]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось сохранить сообщение' });
+  }
+});
+
+app.delete('/api/saved/:id', requireAuth, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM saved_messages WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось удалить' });
   }
 });
 
@@ -435,6 +534,49 @@ io.on('connection', (socket) => {
           roomId: currentRoom,
           fromUsername: currentUsername,
           preview: text.slice(0, 120)
+        });
+      }
+    }
+  });
+
+  socket.on('chat-file', async ({ dataUrl, mimeType, filename }) => {
+    if (!currentRoom || !currentUsername) return;
+    if (!dataUrl || typeof dataUrl !== 'string') return;
+    if (dataUrl.length > 8 * 1024 * 1024) return; // safety cap, roughly matches maxHttpBufferSize
+
+    const safeName = String(filename || 'file').slice(0, 200);
+    const safeType = String(mimeType || 'application/octet-stream').slice(0, 100);
+
+    const payload = {
+      system: false,
+      username: currentUsername,
+      text: '',
+      time: Date.now(),
+      attachment: { dataUrl, mimeType: safeType, filename: safeName }
+    };
+
+    io.to(currentRoom).emit('chat-message', payload);
+
+    try {
+      await pool.query(
+        'INSERT INTO messages (room_id, from_user, from_username, content, attachment_data, attachment_type, attachment_name) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [currentRoom, socket.authedUserId, currentUsername, '', dataUrl, safeType, safeName]
+      );
+    } catch (e) {
+      console.error('Не удалось сохранить файл:', e);
+    }
+
+    if (socket.authedUserId) {
+      const otherId = otherDmParticipant(currentRoom, socket.authedUserId);
+      if (otherId && !isUserInRoom(currentRoom, otherId)) {
+        const preview = safeType.startsWith('audio/') ? '🎤 Голосовое сообщение'
+          : safeType.startsWith('image/') ? '📷 Фото'
+          : safeType.startsWith('video/') ? '🎥 Видео'
+          : '📎 Файл: ' + safeName;
+        io.to('user-' + otherId).emit('notify-message', {
+          roomId: currentRoom,
+          fromUsername: currentUsername,
+          preview
         });
       }
     }
