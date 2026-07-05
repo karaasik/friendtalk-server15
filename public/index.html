@@ -52,6 +52,14 @@
     </div>
   </div>
 
+  <!-- Incoming call banner (shown over any screen) -->
+  <div id="call-banner" class="call-banner hidden">
+    <span class="flame small">🔥</span>
+    <span id="call-banner-text"></span>
+    <button id="call-accept-btn" class="pill-btn accept">Ответить</button>
+    <button id="call-decline-btn" class="pill-btn decline">Отклонить</button>
+  </div>
+
   <!-- FRIENDS SCREEN -->
   <div id="friends-screen" class="screen hidden">
     <header class="topbar">
@@ -60,6 +68,8 @@
         <span id="my-username-label"></span>
       </div>
       <div class="controls">
+        <button id="notif-btn" class="control-btn" title="Включить уведомления">🔔</button>
+        <button id="theme-btn" class="control-btn" title="Светлая/тёмная тема">🌙</button>
         <button id="logout-btn" class="control-btn" title="Выйти">⎋</button>
       </div>
     </header>
@@ -109,6 +119,7 @@
       <div class="controls">
         <button id="toggle-mic" class="control-btn active" title="Микрофон">🎤</button>
         <button id="toggle-cam" class="control-btn" title="Камера">📷</button>
+        <button id="theme-btn-chat" class="control-btn" title="Светлая/тёмная тема">🌙</button>
         <button id="leave-btn" class="control-btn danger" title="Назад к друзьям">✕</button>
       </div>
     </header>
