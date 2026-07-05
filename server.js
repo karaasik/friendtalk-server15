@@ -51,9 +51,41 @@ async function initDb() {
       UNIQUE(from_user, to_user)
     );
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id SERIAL PRIMARY KEY,
+      room_id TEXT NOT NULL,
+      from_user INTEGER,
+      from_username TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, created_at);
+  `);
   console.log('База данных готова.');
 }
 initDb().catch(err => console.error('Ошибка инициализации БД:', err));
+
+const SUPPORT_USERNAME = 'support';
+
+// Ensures every new user is automatically friends with the reserved "support" account, if it exists.
+async function autoFriendSupport(newUserId) {
+  try {
+    const supportResult = await pool.query('SELECT id FROM users WHERE username = $1', [SUPPORT_USERNAME]);
+    if (supportResult.rows.length === 0) return;
+    const supportId = supportResult.rows[0].id;
+    if (supportId === newUserId) return;
+    await pool.query(
+      `INSERT INTO friend_requests (from_user, to_user, status) VALUES ($1, $2, 'accepted')
+       ON CONFLICT (from_user, to_user) DO UPDATE SET status = 'accepted'`,
+      [supportId, newUserId]
+    );
+  } catch (err) {
+    console.error('Не удалось добавить поддержку в друзья:', err);
+  }
+}
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -107,6 +139,7 @@ app.post('/api/register', async (req, res) => {
 
     const token = makeToken();
     await pool.query('INSERT INTO sessions (token, user_id) VALUES ($1, $2)', [token, user.id]);
+    await autoFriendSupport(user.id);
 
     res.json({ token, username: user.username });
   } catch (err) {
@@ -169,6 +202,7 @@ app.post('/api/friends/request', requireAuth, async (req, res) => {
     const toUser = targetResult.rows[0].id;
     if (toUser === req.userId) return res.status(400).json({ error: 'Нельзя добавить самого себя' });
 
+    // if the other person already sent us a request, auto-accept instead of duplicating
     const reverse = await pool.query(
       `SELECT id, status FROM friend_requests WHERE from_user = $1 AND to_user = $2`,
       [toUser, req.userId]
@@ -247,7 +281,33 @@ app.get('/api/friends', requireAuth, async (req, res) => {
   }
 });
 
+app.get('/api/messages', requireAuth, async (req, res) => {
+  try {
+    const roomId = String(req.query.roomId || '').trim().slice(0, 128);
+    if (!roomId) return res.status(400).json({ error: 'Не указана комната' });
+
+    const result = await pool.query(
+      `SELECT from_username, content, created_at FROM messages
+       WHERE room_id = $1
+       ORDER BY created_at ASC
+       LIMIT 300`,
+      [roomId]
+    );
+    res.json({
+      messages: result.rows.map(r => ({
+        username: r.from_username,
+        text: r.content,
+        time: new Date(r.created_at).getTime()
+      }))
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось загрузить сообщения' });
+  }
+});
+
 // ---------- Rooms: text chat + WebRTC signaling ----------
+// roomId -> Map<socketId, {username, userId}>
 const rooms = new Map();
 
 function getRoomUsers(roomId) {
@@ -256,26 +316,64 @@ function getRoomUsers(roomId) {
   return Array.from(room.entries()).map(([id, data]) => ({ id, username: data.username }));
 }
 
-async function usernameFromToken(token) {
+function isUserInRoom(roomId, userId) {
+  const room = rooms.get(roomId);
+  if (!room || !userId) return false;
+  return Array.from(room.values()).some(v => v.userId === userId);
+}
+
+// For dm-<a>-<b> rooms, returns the "other" participant's user id.
+function otherDmParticipant(roomId, myUserId) {
+  if (!roomId.startsWith('dm-')) return null;
+  const parts = roomId.slice(3).split('-');
+  if (parts.length !== 2) return null;
+  const a = parseInt(parts[0], 10);
+  const b = parseInt(parts[1], 10);
+  if (a === myUserId) return b;
+  if (b === myUserId) return a;
+  return null;
+}
+
+async function sessionFromToken(token) {
   if (!token) return null;
   const result = await pool.query(
-    `SELECT u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = $1`,
+    `SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = $1`,
     [token]
   );
-  return result.rows.length ? result.rows[0].username : null;
+  return result.rows.length ? { id: result.rows[0].id, username: result.rows[0].username } : null;
 }
 
 io.on('connection', (socket) => {
   let currentRoom = null;
   let currentUsername = null;
+  socket.authedUserId = null;
+  socket.authedUsername = null;
 
-  socket.on('join-room', async ({ roomId, token, username: fallbackUsername }) => {
+  // Persistent per-user channel, used to push call/message notifications
+  // even while the person isn't actively inside that room.
+  socket.on('authenticate', async ({ token }) => {
+    try {
+      const session = await sessionFromToken(token);
+      if (!session) return;
+      socket.authedUserId = session.id;
+      socket.authedUsername = session.username;
+      socket.join('user-' + session.id);
+    } catch (e) {
+      console.error('Ошибка аутентификации сокета:', e);
+    }
+  });
+
+  socket.on('join-room', async ({ roomId, token, username: fallbackUsername, intent }) => {
     if (!roomId) return;
     roomId = String(roomId).trim().slice(0, 128);
     if (!roomId) return;
 
     let username = null;
-    try { username = await usernameFromToken(token); } catch (e) { }
+    let userId = null;
+    try {
+      const session = await sessionFromToken(token);
+      if (session) { username = session.username; userId = session.id; }
+    } catch (e) { /* ignore */ }
     if (!username) username = String(fallbackUsername || 'Гость').trim().slice(0, 32);
 
     currentRoom = roomId;
@@ -285,7 +383,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(roomId);
 
     const existingUsers = getRoomUsers(roomId);
-    room.set(socket.id, { username });
+    room.set(socket.id, { username, userId });
     socket.join(roomId);
 
     socket.emit('room-users', existingUsers);
@@ -296,18 +394,50 @@ io.on('connection', (socket) => {
       text: `${username} присоединился(ась) к комнате`,
       time: Date.now()
     });
+
+    // Ring the other person for a call (only relevant for 1:1 "dm-" rooms).
+    if (intent === 'call' && userId) {
+      const otherId = otherDmParticipant(roomId, userId);
+      if (otherId && !isUserInRoom(roomId, otherId)) {
+        io.to('user-' + otherId).emit('incoming-call', { roomId, fromUsername: username });
+      }
+    }
   });
 
-  socket.on('chat-message', (text) => {
+  socket.on('chat-message', async (text) => {
     if (!currentRoom || !currentUsername) return;
     text = String(text || '').slice(0, 2000);
     if (!text.trim()) return;
-    io.to(currentRoom).emit('chat-message', {
+
+    const payload = {
       system: false,
       username: currentUsername,
       text,
       time: Date.now()
-    });
+    };
+
+    io.to(currentRoom).emit('chat-message', payload);
+
+    try {
+      await pool.query(
+        'INSERT INTO messages (room_id, from_user, from_username, content) VALUES ($1, $2, $3, $4)',
+        [currentRoom, socket.authedUserId, currentUsername, text]
+      );
+    } catch (e) {
+      console.error('Не удалось сохранить сообщение:', e);
+    }
+
+    // Notify the other DM participant if they're not currently viewing this room.
+    if (socket.authedUserId) {
+      const otherId = otherDmParticipant(currentRoom, socket.authedUserId);
+      if (otherId && !isUserInRoom(currentRoom, otherId)) {
+        io.to('user-' + otherId).emit('notify-message', {
+          roomId: currentRoom,
+          fromUsername: currentUsername,
+          preview: text.slice(0, 120)
+        });
+      }
+    }
   });
 
   socket.on('webrtc-signal', ({ to, signal }) => {
