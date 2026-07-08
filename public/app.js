@@ -26,7 +26,6 @@ const API_BASE = location.origin;
 const authScreen = document.getElementById('auth-screen');
 const friendsScreen = document.getElementById('friends-screen');
 const chatScreen = document.getElementById('chat-screen');
-const savedScreen = document.getElementById('saved-screen');
 
 // ---------- Auth elements ----------
 const loginForm = document.getElementById('login-form');
@@ -42,9 +41,6 @@ const themeBtn = document.getElementById('theme-btn');
 const themeBtnChat = document.getElementById('theme-btn-chat');
 const supportBtn = document.getElementById('support-btn');
 const savedBtn = document.getElementById('saved-btn');
-const savedBackBtn = document.getElementById('saved-back-btn');
-const savedMessagesEl = document.getElementById('saved-messages');
-const noSavedMsg = document.getElementById('no-saved-msg');
 const addFriendForm = document.getElementById('add-friend-form');
 const addFriendInput = document.getElementById('add-friend-input');
 const addFriendMsg = document.getElementById('add-friend-msg');
@@ -101,8 +97,12 @@ function applyTheme(theme) {
 }
 
 function initTheme() {
-  let theme = 'dark';
-  try { theme = localStorage.getItem('ft_theme') || 'dark'; } catch (e) {}
+  let theme = null;
+  try { theme = localStorage.getItem('ft_theme'); } catch (e) {}
+  if (!theme) {
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    theme = prefersDark ? 'dark' : 'light';
+  }
   applyTheme(theme);
 }
 
@@ -156,7 +156,7 @@ function showNotification(title, body) {
 })();
 
 function showScreen(el) {
-  [authScreen, friendsScreen, chatScreen, savedScreen].forEach(s => s.classList.add('hidden'));
+  [authScreen, friendsScreen, chatScreen].forEach(s => s.classList.add('hidden'));
   el.classList.remove('hidden');
 }
 
@@ -210,6 +210,20 @@ function connectPersistentSocket() {
       renderFriendsFromCache();
     }
     showNotification(`Сообщение от ${fromUsername}`, preview);
+  });
+
+  socket.on('presence-update', ({ userId, online, lastSeen }) => {
+    const friend = friendsCache.find(f => f.id === userId);
+    if (friend) {
+      friend.online = online;
+      if (lastSeen) friend.lastSeen = lastSeen;
+      renderFriendsFromCache();
+    }
+  });
+
+  socket.on('message-deleted', ({ id }) => {
+    const row = document.querySelector(`[data-msg-id="${id}"]`);
+    if (row) row.remove();
   });
 
   registerSocketHandlers();
@@ -325,58 +339,16 @@ supportBtn.addEventListener('click', async () => {
 });
 
 savedBtn.addEventListener('click', () => {
-  showScreen(savedScreen);
-  loadSaved();
+  joinRoom('self-' + myUserId, 'Избранное', { textOnly: true });
 });
 
-savedBackBtn.addEventListener('click', () => {
-  enterFriendsScreen();
-});
-
-async function loadSaved() {
+async function forwardToSelf(msg) {
   try {
-    const data = await apiRequest('/api/saved');
-    renderSaved(data.saved);
-  } catch (e) {
-    console.error(e);
-  }
-}
-
-function renderSaved(saved) {
-  savedMessagesEl.innerHTML = '';
-  noSavedMsg.classList.toggle('hidden', saved.length > 0);
-  saved.forEach(item => {
-    const div = document.createElement('div');
-    div.className = 'msg';
-    const time = item.time ? new Date(item.time).toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
-    let html = `<span class="author">${escapeHtml(item.username)}</span>${escapeHtml(item.text || '')}<span class="time">${time}</span>`;
-    div.innerHTML = html;
-    if (item.attachment) {
-      div.appendChild(renderAttachment(item.attachment));
-    }
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'save-star-btn';
-    removeBtn.textContent = '✕ убрать';
-    removeBtn.addEventListener('click', async () => {
-      try {
-        await apiRequest('/api/saved/' + item.id, { method: 'DELETE' });
-        loadSaved();
-      } catch (e) { console.error(e); }
-    });
-    div.appendChild(document.createElement('br'));
-    div.appendChild(removeBtn);
-    savedMessagesEl.appendChild(div);
-  });
-}
-
-async function saveMessageToFavorites(msg) {
-  try {
-    await apiRequest('/api/saved', {
+    await apiRequest('/api/forward-to-self', {
       method: 'POST',
       body: {
         username: msg.username,
         text: msg.text || '',
-        time: msg.time,
         attachment: msg.attachment || null
       }
     });
@@ -437,16 +409,48 @@ function renderFriendsList(friends) {
     const li = document.createElement('li');
     const unread = unreadCounts.get(f.id) || 0;
     const badge = unread > 0 ? `<span class="unread-badge">${unread}</span>` : '';
+    const statusText = f.online ? 'В сети' : formatLastSeen(f.lastSeen);
+    const statusClass = f.online ? 'friend-status online' : 'friend-status';
     li.innerHTML = `
-      <span class="friend-name"><span class="avatar-circle">${initial(f.username)}</span>${escapeHtml(f.username)}${badge}</span>
+      <span class="friend-name">
+        <span class="avatar-circle">${initial(f.username)}<span class="presence-dot ${f.online ? 'online' : ''}"></span></span>
+        <span class="friend-meta">
+          <span>${escapeHtml(f.username)}${badge}</span>
+          <span class="${statusClass}">${statusText}</span>
+        </span>
+      </span>
       <span class="row-actions">
         <button class="pill-btn message" data-id="${f.id}">Написать</button>
         <button class="pill-btn call" data-id="${f.id}">Позвонить</button>
+        <button class="pill-btn remove" data-id="${f.id}" title="Удалить из друзей">✕</button>
       </span>`;
     li.querySelector('.message').addEventListener('click', () => startFriendChat(f.id, f.username));
     li.querySelector('.call').addEventListener('click', () => startFriendCall(f.id, f.username));
+    li.querySelector('.remove').addEventListener('click', () => removeFriend(f.id, f.username));
     friendsList.appendChild(li);
   });
+}
+
+function formatLastSeen(ts) {
+  if (!ts) return 'не в сети';
+  const diffMs = Date.now() - ts;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'был(а) только что';
+  if (mins < 60) return `был(а) ${mins} мин. назад`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `был(а) ${hours} ч. назад`;
+  const date = new Date(ts);
+  return 'был(а) ' + date.toLocaleDateString([], { day: '2-digit', month: '2-digit' });
+}
+
+async function removeFriend(friendId, friendUsername) {
+  if (!confirm(`Удалить ${friendUsername} из друзей?`)) return;
+  try {
+    await apiRequest('/api/friends/' + friendId, { method: 'DELETE' });
+    loadFriends();
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 function initial(name) {
@@ -617,6 +621,20 @@ function createPeerConnection(peerId, username, isInitiator) {
     addRemoteVideoTile(peerId, username, e.streams[0]);
   };
 
+  // Some network combinations (strict NAT / mobile carriers) need a moment longer,
+  // or a fresh ICE negotiation, before the connection actually comes through.
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === 'failed') {
+      try { pc.restartIce(); } catch (e) { /* older browsers: fall back to renegotiation below */ }
+      if (isInitiator) {
+        pc.createOffer({ iceRestart: true })
+          .then(offer => pc.setLocalDescription(offer))
+          .then(() => socket.emit('webrtc-signal', { to: peerId, signal: pc.localDescription }))
+          .catch(err => console.error('Не удалось переподключиться:', err));
+      }
+    }
+  };
+
   if (isInitiator) {
     pc.onnegotiationneeded = async () => {
       try {
@@ -765,6 +783,7 @@ function addMessage(msg) {
   const time = new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const row = document.createElement('div');
   row.className = 'msg-row';
+  if (msg.id != null) row.dataset.msgId = msg.id;
 
   const div = document.createElement('div');
   div.className = 'msg';
@@ -777,14 +796,31 @@ function addMessage(msg) {
     div.appendChild(renderAttachment(msg.attachment));
   }
 
+  const actions = document.createElement('span');
+  actions.className = 'msg-actions';
+
   const star = document.createElement('button');
-  star.className = 'save-star-btn';
+  star.className = 'msg-action-btn';
   star.title = 'Сохранить в избранное';
   star.textContent = '⭐';
-  star.addEventListener('click', () => saveMessageToFavorites(msg));
+  star.addEventListener('click', () => forwardToSelf(msg));
+  actions.appendChild(star);
+
+  const isMine = msg.fromUserId != null && msg.fromUserId === myUserId;
+  if (isMine && msg.id != null) {
+    const del = document.createElement('button');
+    del.className = 'msg-action-btn';
+    del.title = 'Удалить у всех';
+    del.textContent = '🗑';
+    del.addEventListener('click', () => {
+      if (!confirm('Удалить это сообщение у всех участников чата?')) return;
+      socket.emit('delete-message', { id: msg.id });
+    });
+    actions.appendChild(del);
+  }
 
   row.appendChild(div);
-  row.appendChild(star);
+  row.appendChild(actions);
   messagesEl.appendChild(row);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
