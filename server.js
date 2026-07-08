@@ -8,12 +8,24 @@ const http = require('http');
 const { Server } = require('socket.io');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: '*' },
   maxHttpBufferSize: 8 * 1024 * 1024 // allow attachments up to ~8MB (base64-encoded)
+});
+
+// Basic hardening: security headers + rate limiting on the sensitive auth endpoints.
+app.use(helmet({ contentSecurityPolicy: false })); // CSP off since we load Google Fonts + inline event handlers
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Слишком много попыток. Попробуйте снова через несколько минут.' }
 });
 
 const PORT = process.env.PORT || 3000;
@@ -34,9 +46,11 @@ async function initDb() {
       id SERIAL PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT now()
+      created_at TIMESTAMPTZ DEFAULT now(),
+      last_seen_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ DEFAULT now();`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY,
@@ -72,19 +86,6 @@ async function initDb() {
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT;`);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, created_at);
-  `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS saved_messages (
-      id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-      from_username TEXT NOT NULL,
-      content TEXT,
-      attachment_data TEXT,
-      attachment_type TEXT,
-      attachment_name TEXT,
-      original_time BIGINT,
-      created_at TIMESTAMPTZ DEFAULT now()
-    );
   `);
   console.log('База данных готова.');
 }
@@ -140,7 +141,7 @@ async function requireAuth(req, res, next) {
 }
 
 // ---------- Auth endpoints ----------
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', authLimiter, async (req, res) => {
   try {
     let { username, password } = req.body || {};
     username = String(username || '').trim().slice(0, 32);
@@ -170,7 +171,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', authLimiter, async (req, res) => {
   try {
     let { username, password } = req.body || {};
     username = String(username || '').trim().slice(0, 32);
@@ -277,10 +278,26 @@ app.get('/api/support', requireAuth, async (req, res) => {
   }
 });
 
+app.delete('/api/friends/:friendId', requireAuth, async (req, res) => {
+  try {
+    const friendId = parseInt(req.params.friendId, 10);
+    if (!friendId) return res.status(400).json({ error: 'Некорректный id' });
+    await pool.query(
+      `DELETE FROM friend_requests WHERE
+       (from_user = $1 AND to_user = $2) OR (from_user = $2 AND to_user = $1)`,
+      [req.userId, friendId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось удалить друга' });
+  }
+});
+
 app.get('/api/friends', requireAuth, async (req, res) => {
   try {
     const friends = await pool.query(
-      `SELECT u.id, u.username FROM friend_requests fr
+      `SELECT u.id, u.username, u.last_seen_at FROM friend_requests fr
        JOIN users u ON u.id = CASE WHEN fr.from_user = $1 THEN fr.to_user ELSE fr.from_user END
        WHERE fr.status = 'accepted' AND (fr.from_user = $1 OR fr.to_user = $1)
          AND u.username != $2
@@ -305,7 +322,12 @@ app.get('/api/friends', requireAuth, async (req, res) => {
     );
 
     res.json({
-      friends: friends.rows,
+      friends: friends.rows.map(f => ({
+        id: f.id,
+        username: f.username,
+        online: onlineUsers.has(f.id),
+        lastSeen: f.last_seen_at ? new Date(f.last_seen_at).getTime() : null
+      })),
       incoming: incoming.rows,
       outgoing: outgoing.rows
     });
@@ -321,7 +343,7 @@ app.get('/api/messages', requireAuth, async (req, res) => {
     if (!roomId) return res.status(400).json({ error: 'Не указана комната' });
 
     const result = await pool.query(
-      `SELECT from_username, content, attachment_data, attachment_type, attachment_name, created_at FROM messages
+      `SELECT id, from_user, from_username, content, attachment_data, attachment_type, attachment_name, created_at FROM messages
        WHERE room_id = $1
        ORDER BY created_at ASC
        LIMIT 300`,
@@ -329,6 +351,8 @@ app.get('/api/messages', requireAuth, async (req, res) => {
     );
     res.json({
       messages: result.rows.map(r => ({
+        id: r.id,
+        fromUserId: r.from_user,
         username: r.from_username,
         text: r.content,
         time: new Date(r.created_at).getTime(),
@@ -345,69 +369,37 @@ app.get('/api/messages', requireAuth, async (req, res) => {
   }
 });
 
-// ---------- Saved messages ("избранное") — private per user ----------
-app.get('/api/saved', requireAuth, async (req, res) => {
+// "Избранное" is just a personal chat room (self-<userId>) that only the owner can write
+// to and read — messages starred elsewhere get copied here without needing to switch rooms.
+app.post('/api/forward-to-self', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT id, from_username, content, attachment_data, attachment_type, attachment_name, original_time
-       FROM saved_messages WHERE user_id = $1 ORDER BY created_at DESC`,
-      [req.userId]
-    );
-    res.json({
-      saved: result.rows.map(r => ({
-        id: r.id,
-        username: r.from_username,
-        text: r.content,
-        time: r.original_time,
-        attachment: r.attachment_data ? {
-          dataUrl: r.attachment_data,
-          mimeType: r.attachment_type,
-          filename: r.attachment_name
-        } : null
-      }))
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Не удалось загрузить избранное' });
-  }
-});
-
-app.post('/api/saved', requireAuth, async (req, res) => {
-  try {
-    const { username, text, time, attachment } = req.body || {};
-    await pool.query(
-      `INSERT INTO saved_messages (user_id, from_username, content, attachment_data, attachment_type, attachment_name, original_time)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    const { username, text, attachment } = req.body || {};
+    const roomId = 'self-' + req.userId;
+    const inserted = await pool.query(
+      `INSERT INTO messages (room_id, from_user, from_username, content, attachment_data, attachment_type, attachment_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
       [
+        roomId,
         req.userId,
-        String(username || '').slice(0, 32),
+        String(username || req.username).slice(0, 32),
         String(text || '').slice(0, 2000),
         attachment ? attachment.dataUrl : null,
         attachment ? attachment.mimeType : null,
-        attachment ? attachment.filename : null,
-        time || Date.now()
+        attachment ? attachment.filename : null
       ]
     );
-    res.json({ ok: true });
+    res.json({ ok: true, id: inserted.rows[0].id });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Не удалось сохранить сообщение' });
   }
 });
 
-app.delete('/api/saved/:id', requireAuth, async (req, res) => {
-  try {
-    await pool.query('DELETE FROM saved_messages WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
-    res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Не удалось удалить' });
-  }
-});
-
 // ---------- Rooms: text chat + WebRTC signaling ----------
 // roomId -> Map<socketId, {username, userId}>
 const rooms = new Map();
+// userId -> count of currently connected sockets (for online/offline presence)
+const onlineUsers = new Map();
 
 function getRoomUsers(roomId) {
   const room = rooms.get(roomId);
@@ -442,6 +434,41 @@ async function sessionFromToken(token) {
   return result.rows.length ? { id: result.rows[0].id, username: result.rows[0].username } : null;
 }
 
+async function getFriendIds(userId) {
+  const result = await pool.query(
+    `SELECT CASE WHEN from_user = $1 THEN to_user ELSE from_user END AS friend_id
+     FROM friend_requests WHERE status = 'accepted' AND (from_user = $1 OR to_user = $1)`,
+    [userId]
+  );
+  return result.rows.map(r => r.friend_id);
+}
+
+async function markOnline(userId) {
+  const wasOffline = !onlineUsers.has(userId);
+  onlineUsers.set(userId, (onlineUsers.get(userId) || 0) + 1);
+  if (wasOffline) {
+    const friendIds = await getFriendIds(userId);
+    friendIds.forEach(fid => {
+      io.to('user-' + fid).emit('presence-update', { userId, online: true, lastSeen: null });
+    });
+  }
+}
+
+async function markOffline(userId) {
+  const count = onlineUsers.get(userId) || 0;
+  if (count <= 1) {
+    onlineUsers.delete(userId);
+    const now = Date.now();
+    try { await pool.query('UPDATE users SET last_seen_at = now() WHERE id = $1', [userId]); } catch (e) { /* ignore */ }
+    const friendIds = await getFriendIds(userId);
+    friendIds.forEach(fid => {
+      io.to('user-' + fid).emit('presence-update', { userId, online: false, lastSeen: now });
+    });
+  } else {
+    onlineUsers.set(userId, count - 1);
+  }
+}
+
 io.on('connection', (socket) => {
   let currentRoom = null;
   let currentUsername = null;
@@ -457,6 +484,7 @@ io.on('connection', (socket) => {
       socket.authedUserId = session.id;
       socket.authedUsername = session.username;
       socket.join('user-' + session.id);
+      await markOnline(session.id);
     } catch (e) {
       console.error('Ошибка аутентификации сокета:', e);
     }
@@ -508,7 +536,20 @@ io.on('connection', (socket) => {
     text = String(text || '').slice(0, 2000);
     if (!text.trim()) return;
 
+    let messageId = null;
+    try {
+      const inserted = await pool.query(
+        'INSERT INTO messages (room_id, from_user, from_username, content) VALUES ($1, $2, $3, $4) RETURNING id',
+        [currentRoom, socket.authedUserId, currentUsername, text]
+      );
+      messageId = inserted.rows[0].id;
+    } catch (e) {
+      console.error('Не удалось сохранить сообщение:', e);
+    }
+
     const payload = {
+      id: messageId,
+      fromUserId: socket.authedUserId,
       system: false,
       username: currentUsername,
       text,
@@ -516,15 +557,6 @@ io.on('connection', (socket) => {
     };
 
     io.to(currentRoom).emit('chat-message', payload);
-
-    try {
-      await pool.query(
-        'INSERT INTO messages (room_id, from_user, from_username, content) VALUES ($1, $2, $3, $4)',
-        [currentRoom, socket.authedUserId, currentUsername, text]
-      );
-    } catch (e) {
-      console.error('Не удалось сохранить сообщение:', e);
-    }
 
     // Notify the other DM participant if they're not currently viewing this room.
     if (socket.authedUserId) {
@@ -547,7 +579,20 @@ io.on('connection', (socket) => {
     const safeName = String(filename || 'file').slice(0, 200);
     const safeType = String(mimeType || 'application/octet-stream').slice(0, 100);
 
+    let messageId = null;
+    try {
+      const inserted = await pool.query(
+        'INSERT INTO messages (room_id, from_user, from_username, content, attachment_data, attachment_type, attachment_name) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+        [currentRoom, socket.authedUserId, currentUsername, '', dataUrl, safeType, safeName]
+      );
+      messageId = inserted.rows[0].id;
+    } catch (e) {
+      console.error('Не удалось сохранить файл:', e);
+    }
+
     const payload = {
+      id: messageId,
+      fromUserId: socket.authedUserId,
       system: false,
       username: currentUsername,
       text: '',
@@ -556,15 +601,6 @@ io.on('connection', (socket) => {
     };
 
     io.to(currentRoom).emit('chat-message', payload);
-
-    try {
-      await pool.query(
-        'INSERT INTO messages (room_id, from_user, from_username, content, attachment_data, attachment_type, attachment_name) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [currentRoom, socket.authedUserId, currentUsername, '', dataUrl, safeType, safeName]
-      );
-    } catch (e) {
-      console.error('Не удалось сохранить файл:', e);
-    }
 
     if (socket.authedUserId) {
       const otherId = otherDmParticipant(currentRoom, socket.authedUserId);
@@ -582,13 +618,32 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Deletes a message "for everyone" — only the original author may delete it.
+  socket.on('delete-message', async ({ id }) => {
+    if (!currentRoom || !socket.authedUserId || !id) return;
+    try {
+      const result = await pool.query(
+        'DELETE FROM messages WHERE id = $1 AND room_id = $2 AND from_user = $3 RETURNING id',
+        [id, currentRoom, socket.authedUserId]
+      );
+      if (result.rows.length > 0) {
+        io.to(currentRoom).emit('message-deleted', { id });
+      }
+    } catch (e) {
+      console.error('Не удалось удалить сообщение:', e);
+    }
+  });
+
   socket.on('webrtc-signal', ({ to, signal }) => {
     if (!to || !signal) return;
     io.to(to).emit('webrtc-signal', { from: socket.id, signal });
   });
 
   socket.on('leave-room', () => handleLeave());
-  socket.on('disconnect', () => handleLeave());
+  socket.on('disconnect', () => {
+    handleLeave();
+    if (socket.authedUserId) markOffline(socket.authedUserId).catch(e => console.error(e));
+  });
 
   function handleLeave() {
     if (!currentRoom) return;
