@@ -3,9 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>karasik21 — общайтесь без границ</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>karasik21</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -14,10 +12,10 @@
   <div id="auth-screen" class="screen">
     <div class="login-card">
       <div class="brand">
-        <span class="flame">🔥</span>
+        <span class="logo-mark">k21</span>
         <h1>karasik21</h1>
       </div>
-      <p class="tagline">Место, где собираются друзья — текст, голос и видео в одной комнате.</p>
+      <p class="tagline">Текст, голос и видео с друзьями — в одном месте.</p>
 
       <div class="tabs">
         <button class="tab-btn active" data-tab="login">Войти</button>
@@ -54,7 +52,7 @@
 
   <!-- Incoming call banner (shown over any screen) -->
   <div id="call-banner" class="call-banner hidden">
-    <span class="flame small">🔥</span>
+    <span class="logo-mark small">k21</span>
     <span id="call-banner-text"></span>
     <button id="call-accept-btn" class="pill-btn accept">Ответить</button>
     <button id="call-decline-btn" class="pill-btn decline">Отклонить</button>
@@ -64,7 +62,7 @@
   <div id="friends-screen" class="screen hidden">
     <header class="topbar">
       <div class="room-info">
-        <span class="flame small">🔥</span>
+        <span class="logo-mark small">k21</span>
         <span id="my-username-label"></span>
       </div>
       <div class="controls">
@@ -115,7 +113,7 @@
   <div id="chat-screen" class="screen hidden">
     <header class="topbar">
       <div class="room-info">
-        <span class="flame small">🔥</span>
+        <span class="logo-mark small">k21</span>
         <span id="room-name-label"></span>
       </div>
       <div class="controls">
@@ -146,23 +144,6 @@
           </form>
         </div>
       </aside>
-    </main>
-  </div>
-
-  <!-- SAVED MESSAGES SCREEN ("Избранное") -->
-  <div id="saved-screen" class="screen hidden">
-    <header class="topbar">
-      <div class="room-info">
-        <span class="flame small">⭐</span>
-        <span>Избранное</span>
-      </div>
-      <div class="controls">
-        <button id="saved-back-btn" class="control-btn danger" title="Назад к друзьям">✕</button>
-      </div>
-    </header>
-    <main class="saved-main">
-      <div class="messages" id="saved-messages"></div>
-      <p id="no-saved-msg" class="hint hidden">Пока ничего не сохранено. Нажмите ⭐ рядом с сообщением в чате, чтобы добавить его сюда — эти сообщения видите только вы.</p>
     </main>
   </div>
 
