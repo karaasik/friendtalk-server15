@@ -61,10 +61,10 @@
   <!-- FRIENDS SCREEN -->
   <div id="friends-screen" class="screen hidden">
     <header class="topbar">
-      <div class="room-info">
-        <span class="logo-mark small">k21</span>
+      <button id="profile-btn" class="room-info profile-btn" title="Сменить аватарку">
+        <span id="my-avatar-slot"></span>
         <span id="my-username-label"></span>
-      </div>
+      </button>
       <div class="controls">
         <button id="support-btn" class="control-btn" title="Поддержка">🆘</button>
         <button id="saved-btn" class="control-btn" title="Избранное">⭐</button>
@@ -145,6 +145,15 @@
         </div>
       </aside>
     </main>
+  </div>
+
+  <!-- Avatar picker overlay -->
+  <div id="avatar-picker" class="overlay hidden">
+    <div class="overlay-card">
+      <h3>Выберите аватарку</h3>
+      <div id="avatar-grid" class="avatar-grid"></div>
+      <button id="avatar-picker-close" class="pill-btn message" style="margin-top:16px;width:100%;">Готово</button>
+    </div>
   </div>
 
 <script src="/socket.io/socket.io.js"></script>
