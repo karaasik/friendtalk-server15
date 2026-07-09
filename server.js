@@ -15,7 +15,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: '*' },
-  maxHttpBufferSize: 8 * 1024 * 1024 // allow attachments up to ~8MB (base64-encoded)
+  maxHttpBufferSize: 10 * 1024 * 1024 // allow attachments up to ~10MB (base64-encoded, includes overhead)
 });
 
 // Basic hardening: security headers + rate limiting on the sensitive auth endpoints.
@@ -47,9 +47,11 @@ async function initDb() {
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       created_at TIMESTAMPTZ DEFAULT now(),
-      last_seen_at TIMESTAMPTZ DEFAULT now()
+      last_seen_at TIMESTAMPTZ DEFAULT now(),
+      avatar INTEGER NOT NULL DEFAULT 1
     );
   `);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar INTEGER NOT NULL DEFAULT 1;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ DEFAULT now();`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sessions (
@@ -154,9 +156,10 @@ app.post('/api/register', authLimiter, async (req, res) => {
     if (existing.rows.length > 0) return res.status(400).json({ error: 'Это имя уже занято' });
 
     const hash = await bcrypt.hash(password, 10);
+    const randomAvatar = 1 + Math.floor(Math.random() * 15);
     const inserted = await pool.query(
-      'INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id, username',
-      [username, hash]
+      'INSERT INTO users (username, password_hash, avatar) VALUES ($1, $2, $3) RETURNING id, username, avatar',
+      [username, hash, randomAvatar]
     );
     const user = inserted.rows[0];
 
@@ -164,7 +167,7 @@ app.post('/api/register', authLimiter, async (req, res) => {
     await pool.query('INSERT INTO sessions (token, user_id) VALUES ($1, $2)', [token, user.id]);
     await autoFriendSupport(user.id);
 
-    res.json({ token, username: user.username });
+    res.json({ token, username: user.username, avatar: user.avatar });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Не удалось зарегистрироваться' });
@@ -177,7 +180,7 @@ app.post('/api/login', authLimiter, async (req, res) => {
     username = String(username || '').trim().slice(0, 32);
     password = String(password || '');
 
-    const result = await pool.query('SELECT id, username, password_hash FROM users WHERE username = $1', [username]);
+    const result = await pool.query('SELECT id, username, password_hash, avatar FROM users WHERE username = $1', [username]);
     if (result.rows.length === 0) return res.status(400).json({ error: 'Неверное имя или пароль' });
 
     const user = result.rows[0];
@@ -187,15 +190,33 @@ app.post('/api/login', authLimiter, async (req, res) => {
     const token = makeToken();
     await pool.query('INSERT INTO sessions (token, user_id) VALUES ($1, $2)', [token, user.id]);
 
-    res.json({ token, username: user.username });
+    res.json({ token, username: user.username, avatar: user.avatar });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Не удалось войти' });
   }
 });
 
-app.get('/api/me', requireAuth, (req, res) => {
-  res.json({ id: req.userId, username: req.username });
+app.get('/api/me', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT avatar FROM users WHERE id = $1', [req.userId]);
+    res.json({ id: req.userId, username: req.username, avatar: result.rows[0] ? result.rows[0].avatar : 1 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+app.patch('/api/me/avatar', requireAuth, async (req, res) => {
+  try {
+    const avatar = parseInt((req.body || {}).avatar, 10);
+    if (!avatar || avatar < 1 || avatar > 15) return res.status(400).json({ error: 'Некорректная аватарка' });
+    await pool.query('UPDATE users SET avatar = $1 WHERE id = $2', [avatar, req.userId]);
+    res.json({ ok: true, avatar });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось обновить аватарку' });
+  }
 });
 
 // ---------- Friends endpoints ----------
@@ -297,7 +318,7 @@ app.delete('/api/friends/:friendId', requireAuth, async (req, res) => {
 app.get('/api/friends', requireAuth, async (req, res) => {
   try {
     const friends = await pool.query(
-      `SELECT u.id, u.username, u.last_seen_at FROM friend_requests fr
+      `SELECT u.id, u.username, u.last_seen_at, u.avatar FROM friend_requests fr
        JOIN users u ON u.id = CASE WHEN fr.from_user = $1 THEN fr.to_user ELSE fr.from_user END
        WHERE fr.status = 'accepted' AND (fr.from_user = $1 OR fr.to_user = $1)
          AND u.username != $2
@@ -306,7 +327,7 @@ app.get('/api/friends', requireAuth, async (req, res) => {
     );
 
     const incoming = await pool.query(
-      `SELECT fr.id, u.username FROM friend_requests fr
+      `SELECT fr.id, u.username, u.avatar FROM friend_requests fr
        JOIN users u ON u.id = fr.from_user
        WHERE fr.to_user = $1 AND fr.status = 'pending'
        ORDER BY fr.created_at DESC`,
@@ -314,7 +335,7 @@ app.get('/api/friends', requireAuth, async (req, res) => {
     );
 
     const outgoing = await pool.query(
-      `SELECT fr.id, u.username FROM friend_requests fr
+      `SELECT fr.id, u.username, u.avatar FROM friend_requests fr
        JOIN users u ON u.id = fr.to_user
        WHERE fr.from_user = $1 AND fr.status = 'pending'
        ORDER BY fr.created_at DESC`,
@@ -325,6 +346,7 @@ app.get('/api/friends', requireAuth, async (req, res) => {
       friends: friends.rows.map(f => ({
         id: f.id,
         username: f.username,
+        avatar: f.avatar,
         online: onlineUsers.has(f.id),
         lastSeen: f.last_seen_at ? new Date(f.last_seen_at).getTime() : null
       })),
@@ -343,9 +365,11 @@ app.get('/api/messages', requireAuth, async (req, res) => {
     if (!roomId) return res.status(400).json({ error: 'Не указана комната' });
 
     const result = await pool.query(
-      `SELECT id, from_user, from_username, content, attachment_data, attachment_type, attachment_name, created_at FROM messages
-       WHERE room_id = $1
-       ORDER BY created_at ASC
+      `SELECT m.id, m.from_user, m.from_username, m.content, m.attachment_data, m.attachment_type, m.attachment_name, m.created_at, u.avatar
+       FROM messages m
+       LEFT JOIN users u ON u.id = m.from_user
+       WHERE m.room_id = $1
+       ORDER BY m.created_at ASC
        LIMIT 300`,
       [roomId]
     );
@@ -354,6 +378,7 @@ app.get('/api/messages', requireAuth, async (req, res) => {
         id: r.id,
         fromUserId: r.from_user,
         username: r.from_username,
+        avatar: r.avatar || 1,
         text: r.content,
         time: new Date(r.created_at).getTime(),
         attachment: r.attachment_data ? {
@@ -404,7 +429,7 @@ const onlineUsers = new Map();
 function getRoomUsers(roomId) {
   const room = rooms.get(roomId);
   if (!room) return [];
-  return Array.from(room.entries()).map(([id, data]) => ({ id, username: data.username }));
+  return Array.from(room.entries()).map(([id, data]) => ({ id, username: data.username, avatar: data.avatar }));
 }
 
 function isUserInRoom(roomId, userId) {
@@ -428,10 +453,10 @@ function otherDmParticipant(roomId, myUserId) {
 async function sessionFromToken(token) {
   if (!token) return null;
   const result = await pool.query(
-    `SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = $1`,
+    `SELECT u.id, u.username, u.avatar FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = $1`,
     [token]
   );
-  return result.rows.length ? { id: result.rows[0].id, username: result.rows[0].username } : null;
+  return result.rows.length ? { id: result.rows[0].id, username: result.rows[0].username, avatar: result.rows[0].avatar } : null;
 }
 
 async function getFriendIds(userId) {
@@ -497,24 +522,26 @@ io.on('connection', (socket) => {
 
     let username = null;
     let userId = null;
+    let avatar = 1;
     try {
       const session = await sessionFromToken(token);
-      if (session) { username = session.username; userId = session.id; }
+      if (session) { username = session.username; userId = session.id; avatar = session.avatar; }
     } catch (e) { /* ignore */ }
     if (!username) username = String(fallbackUsername || 'Гость').trim().slice(0, 32);
 
     currentRoom = roomId;
     currentUsername = username;
+    socket.authedAvatar = avatar;
 
     if (!rooms.has(roomId)) rooms.set(roomId, new Map());
     const room = rooms.get(roomId);
 
     const existingUsers = getRoomUsers(roomId);
-    room.set(socket.id, { username, userId });
+    room.set(socket.id, { username, userId, avatar });
     socket.join(roomId);
 
     socket.emit('room-users', existingUsers);
-    socket.to(roomId).emit('user-joined', { id: socket.id, username });
+    socket.to(roomId).emit('user-joined', { id: socket.id, username, avatar });
 
     socket.to(roomId).emit('chat-message', {
       system: true,
@@ -531,10 +558,10 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('chat-message', async (text) => {
-    if (!currentRoom || !currentUsername) return;
+  socket.on('chat-message', async (text, ack) => {
+    if (!currentRoom || !currentUsername) { if (ack) ack({ ok: false }); return; }
     text = String(text || '').slice(0, 2000);
-    if (!text.trim()) return;
+    if (!text.trim()) { if (ack) ack({ ok: false }); return; }
 
     let messageId = null;
     try {
@@ -545,11 +572,14 @@ io.on('connection', (socket) => {
       messageId = inserted.rows[0].id;
     } catch (e) {
       console.error('Не удалось сохранить сообщение:', e);
+      if (ack) ack({ ok: false });
+      return;
     }
 
     const payload = {
       id: messageId,
       fromUserId: socket.authedUserId,
+      avatar: socket.authedAvatar || 1,
       system: false,
       username: currentUsername,
       text,
@@ -557,6 +587,7 @@ io.on('connection', (socket) => {
     };
 
     io.to(currentRoom).emit('chat-message', payload);
+    if (ack) ack({ ok: true, id: messageId });
 
     // Notify the other DM participant if they're not currently viewing this room.
     if (socket.authedUserId) {
@@ -571,10 +602,10 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('chat-file', async ({ dataUrl, mimeType, filename }) => {
-    if (!currentRoom || !currentUsername) return;
-    if (!dataUrl || typeof dataUrl !== 'string') return;
-    if (dataUrl.length > 8 * 1024 * 1024) return; // safety cap, roughly matches maxHttpBufferSize
+  socket.on('chat-file', async ({ dataUrl, mimeType, filename }, ack) => {
+    if (!currentRoom || !currentUsername) { if (ack) ack({ ok: false }); return; }
+    if (!dataUrl || typeof dataUrl !== 'string') { if (ack) ack({ ok: false }); return; }
+    if (dataUrl.length > 9 * 1024 * 1024) { if (ack) ack({ ok: false, error: 'too_large' }); return; }
 
     const safeName = String(filename || 'file').slice(0, 200);
     const safeType = String(mimeType || 'application/octet-stream').slice(0, 100);
@@ -588,11 +619,14 @@ io.on('connection', (socket) => {
       messageId = inserted.rows[0].id;
     } catch (e) {
       console.error('Не удалось сохранить файл:', e);
+      if (ack) ack({ ok: false });
+      return;
     }
 
     const payload = {
       id: messageId,
       fromUserId: socket.authedUserId,
+      avatar: socket.authedAvatar || 1,
       system: false,
       username: currentUsername,
       text: '',
@@ -601,6 +635,7 @@ io.on('connection', (socket) => {
     };
 
     io.to(currentRoom).emit('chat-message', payload);
+    if (ack) ack({ ok: true, id: messageId });
 
     if (socket.authedUserId) {
       const otherId = otherDmParticipant(currentRoom, socket.authedUserId);
