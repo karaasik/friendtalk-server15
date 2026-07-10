@@ -115,6 +115,7 @@
       <div class="room-info">
         <span class="logo-mark small">k21</span>
         <span id="room-name-label"></span>
+        <span id="call-timer" class="call-timer hidden">00:00</span>
       </div>
       <div class="controls">
         <button id="toggle-mic" class="control-btn active" title="Микрофон">🎤</button>
@@ -128,22 +129,20 @@
     <main class="main-area">
       <section class="video-grid" id="video-grid"></section>
 
-      <aside class="side-panel">
-        <div class="people-list" id="people-list">
-          <h3>В комнате</h3>
-          <ul id="people-ul"></ul>
-        </div>
-        <div class="chat-panel">
-          <div class="messages" id="messages"></div>
-          <form id="chat-form" autocomplete="off">
-            <input id="file-input" type="file" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.zip" class="hidden" />
-            <button type="button" id="attach-btn" title="Прикрепить файл">📎</button>
-            <input id="chat-input" type="text" placeholder="Написать сообщение…" maxlength="2000" />
-            <button type="button" id="voice-btn" title="Голосовое сообщение">🎙️</button>
-            <button type="submit">➤</button>
-          </form>
-        </div>
-      </aside>
+      <div class="people-strip" id="people-list">
+        <ul id="people-ul"></ul>
+      </div>
+
+      <div class="chat-panel">
+        <div class="messages" id="messages"></div>
+        <form id="chat-form" autocomplete="off">
+          <input id="file-input" type="file" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.zip" class="hidden" />
+          <button type="button" id="attach-btn" title="Прикрепить файл">📎</button>
+          <input id="chat-input" type="text" placeholder="Написать сообщение…" maxlength="2000" />
+          <button type="button" id="voice-btn" title="Голосовое сообщение">🎙️</button>
+          <button type="submit">➤</button>
+        </form>
+      </div>
     </main>
   </div>
 
