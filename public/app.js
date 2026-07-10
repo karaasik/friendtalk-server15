@@ -41,6 +41,11 @@ const themeBtn = document.getElementById('theme-btn');
 const themeBtnChat = document.getElementById('theme-btn-chat');
 const supportBtn = document.getElementById('support-btn');
 const savedBtn = document.getElementById('saved-btn');
+const profileBtn = document.getElementById('profile-btn');
+const myAvatarSlot = document.getElementById('my-avatar-slot');
+const avatarPicker = document.getElementById('avatar-picker');
+const avatarGrid = document.getElementById('avatar-grid');
+const avatarPickerClose = document.getElementById('avatar-picker-close');
 const addFriendForm = document.getElementById('add-friend-form');
 const addFriendInput = document.getElementById('add-friend-input');
 const addFriendMsg = document.getElementById('add-friend-msg');
@@ -77,6 +82,7 @@ const leaveBtn = document.getElementById('leave-btn');
 let authToken = null;
 let myUserId = null;
 let myUsername = '';
+let myAvatar = 1;
 
 let socket = null;
 let localStream = null;
@@ -87,6 +93,46 @@ let activeRoomId = null; // room currently open in the chat screen, or null when
 const peers = new Map();
 const unreadCounts = new Map(); // friendId -> count
 let friendsCache = []; // last loaded friends list, used to resolve notifications to names
+
+// ---------- Avatars ----------
+// 15 hand-picked options: a friendly emoji over a soft gradient, no external images needed.
+const AVATARS = [
+  { emoji: '🐱', from: '#ff9a56', to: '#ff6b6b' },
+  { emoji: '🐶', from: '#4facfe', to: '#00f2fe' },
+  { emoji: '🦊', from: '#f6d365', to: '#fda085' },
+  { emoji: '🐼', from: '#a1c4fd', to: '#c2e9fb' },
+  { emoji: '🐨', from: '#84fab0', to: '#8fd3f4' },
+  { emoji: '🦁', from: '#fbc2eb', to: '#a18cd1' },
+  { emoji: '🐸', from: '#96e6a1', to: '#4fd1c5' },
+  { emoji: '🐙', from: '#f77062', to: '#fe5196' },
+  { emoji: '🦄', from: '#c471f5', to: '#fa71cd' },
+  { emoji: '🐰', from: '#fddb92', to: '#a8d8e8' },
+  { emoji: '🐻', from: '#e0c3fc', to: '#8ec5fc' },
+  { emoji: '🐷', from: '#ffd1dc', to: '#ee9ca7' },
+  { emoji: '🐯', from: '#f7b733', to: '#fc4a1a' },
+  { emoji: '🐵', from: '#30cfd0', to: '#7c4dff' },
+  { emoji: '🐔', from: '#ff9a9e', to: '#fecfef' }
+];
+
+function avatarInfo(avatarId) {
+  const idx = ((parseInt(avatarId, 10) || 1) - 1 + AVATARS.length) % AVATARS.length;
+  return AVATARS[idx];
+}
+
+function avatarCircleHtml(avatarId, extraClass) {
+  const a = avatarInfo(avatarId);
+  const cls = 'avatar-circle' + (extraClass ? ' ' + extraClass : '');
+  return `<span class="${cls}" style="background:linear-gradient(150deg, ${a.from}, ${a.to})">${a.emoji}</span>`;
+}
+
+function avatarCircleEl(avatarId, extraClass) {
+  const a = avatarInfo(avatarId);
+  const span = document.createElement('span');
+  span.className = 'avatar-circle' + (extraClass ? ' ' + extraClass : '');
+  span.style.background = `linear-gradient(150deg, ${a.from}, ${a.to})`;
+  span.textContent = a.emoji;
+  return span;
+}
 
 // ---------- Theme ----------
 function applyTheme(theme) {
@@ -178,6 +224,7 @@ async function verifySession() {
     const me = await apiRequest('/api/me');
     myUserId = me.id;
     myUsername = me.username;
+    myAvatar = me.avatar || 1;
     connectPersistentSocket();
     enterFriendsScreen();
   } catch (e) {
@@ -321,8 +368,42 @@ logoutBtn.addEventListener('click', () => {
 // ---------- Friends screen ----------
 function enterFriendsScreen() {
   myUsernameLabel.textContent = myUsername;
+  myAvatarSlot.innerHTML = '';
+  myAvatarSlot.appendChild(avatarCircleEl(myAvatar, 'small'));
   showScreen(friendsScreen);
   loadFriends();
+}
+
+profileBtn.addEventListener('click', () => {
+  renderAvatarGrid();
+  avatarPicker.classList.remove('hidden');
+});
+
+avatarPickerClose.addEventListener('click', () => {
+  avatarPicker.classList.add('hidden');
+});
+
+function renderAvatarGrid() {
+  avatarGrid.innerHTML = '';
+  AVATARS.forEach((a, idx) => {
+    const id = idx + 1;
+    const btn = document.createElement('button');
+    btn.className = 'avatar-option' + (id === myAvatar ? ' selected' : '');
+    btn.style.background = `linear-gradient(150deg, ${a.from}, ${a.to})`;
+    btn.textContent = a.emoji;
+    btn.addEventListener('click', async () => {
+      try {
+        await apiRequest('/api/me/avatar', { method: 'PATCH', body: { avatar: id } });
+        myAvatar = id;
+        myAvatarSlot.innerHTML = '';
+        myAvatarSlot.appendChild(avatarCircleEl(myAvatar, 'small'));
+        renderAvatarGrid();
+      } catch (e) {
+        console.error(e);
+      }
+    });
+    avatarGrid.appendChild(btn);
+  });
 }
 
 supportBtn.addEventListener('click', async () => {
@@ -378,7 +459,7 @@ function renderFriends({ friends, incoming, outgoing }) {
   incoming.forEach(r => {
     const li = document.createElement('li');
     li.innerHTML = `
-      <span class="friend-name"><span class="avatar-circle">${initial(r.username)}</span>${escapeHtml(r.username)}</span>
+      <span class="friend-name">${avatarCircleHtml(r.avatar)}${escapeHtml(r.username)}</span>
       <span class="row-actions">
         <button class="pill-btn accept" data-id="${r.id}">Принять</button>
         <button class="pill-btn decline" data-id="${r.id}">Отклонить</button>
@@ -394,7 +475,7 @@ function renderFriends({ friends, incoming, outgoing }) {
   outgoing.forEach(r => {
     const li = document.createElement('li');
     li.innerHTML = `
-      <span class="friend-name"><span class="avatar-circle">${initial(r.username)}</span>${escapeHtml(r.username)}</span>
+      <span class="friend-name">${avatarCircleHtml(r.avatar)}${escapeHtml(r.username)}</span>
       <span class="pill-btn pending">Ожидание…</span>`;
     outgoingList.appendChild(li);
   });
@@ -413,7 +494,10 @@ function renderFriendsList(friends) {
     const statusClass = f.online ? 'friend-status online' : 'friend-status';
     li.innerHTML = `
       <span class="friend-name">
-        <span class="avatar-circle">${initial(f.username)}<span class="presence-dot ${f.online ? 'online' : ''}"></span></span>
+        <span class="avatar-wrap">
+          ${avatarCircleHtml(f.avatar)}
+          <span class="presence-dot ${f.online ? 'online' : ''}"></span>
+        </span>
         <span class="friend-meta">
           <span>${escapeHtml(f.username)}${badge}</span>
           <span class="${statusClass}">${statusText}</span>
@@ -573,12 +657,12 @@ async function getLocalMedia() {
 function registerSocketHandlers() {
   socket.on('room-users', (users) => {
     updatePeopleList(users, true);
-    users.forEach(u => createPeerConnection(u.id, u.username, true));
+    users.forEach(u => createPeerConnection(u.id, u.username, true, u.avatar));
   });
 
   socket.on('user-joined', (u) => {
     addPersonToList(u);
-    createPeerConnection(u.id, u.username, false);
+    createPeerConnection(u.id, u.username, false, u.avatar);
   });
 
   socket.on('user-left', ({ id }) => {
@@ -605,11 +689,12 @@ function registerSocketHandlers() {
   socket.on('chat-message', (msg) => addMessage(msg));
 }
 
-function createPeerConnection(peerId, username, isInitiator) {
+function createPeerConnection(peerId, username, isInitiator, avatar) {
   if (peers.has(peerId)) return;
 
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-  peers.set(peerId, { pc, username });
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS, iceCandidatePoolSize: 10 });
+  const peerEntry = { pc, username, avatar: avatar || 1, reconnectTimer: null };
+  peers.set(peerId, peerEntry);
 
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
@@ -618,20 +703,37 @@ function createPeerConnection(peerId, username, isInitiator) {
   };
 
   pc.ontrack = (e) => {
-    addRemoteVideoTile(peerId, username, e.streams[0]);
+    addRemoteVideoTile(peerId, username, e.streams[0], peerEntry.avatar);
   };
 
-  // Some network combinations (strict NAT / mobile carriers) need a moment longer,
-  // or a fresh ICE negotiation, before the connection actually comes through.
+  function attemptReconnect() {
+    try { pc.restartIce(); } catch (e) { /* older browsers: fall back to renegotiation below */ }
+    if (isInitiator) {
+      pc.createOffer({ iceRestart: true })
+        .then(offer => pc.setLocalDescription(offer))
+        .then(() => socket.emit('webrtc-signal', { to: peerId, signal: pc.localDescription }))
+        .catch(err => console.error('Не удалось переподключиться:', err));
+    }
+  }
+
+  // Free STUN/TURN relays sometimes cause a brief "disconnected" blip rather than an
+  // outright "failed" state — waiting a few seconds before restarting avoids fighting
+  // a connection that's about to recover on its own, while still catching real drops
+  // (this is the fix for calls that quietly go silent after a few minutes).
   pc.oniceconnectionstatechange = () => {
-    if (pc.iceConnectionState === 'failed') {
-      try { pc.restartIce(); } catch (e) { /* older browsers: fall back to renegotiation below */ }
-      if (isInitiator) {
-        pc.createOffer({ iceRestart: true })
-          .then(offer => pc.setLocalDescription(offer))
-          .then(() => socket.emit('webrtc-signal', { to: peerId, signal: pc.localDescription }))
-          .catch(err => console.error('Не удалось переподключиться:', err));
-      }
+    const state = pc.iceConnectionState;
+    if (peerEntry.reconnectTimer) {
+      clearTimeout(peerEntry.reconnectTimer);
+      peerEntry.reconnectTimer = null;
+    }
+    if (state === 'failed') {
+      attemptReconnect();
+    } else if (state === 'disconnected') {
+      peerEntry.reconnectTimer = setTimeout(() => {
+        if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+          attemptReconnect();
+        }
+      }, 4000);
     }
   };
 
@@ -649,6 +751,7 @@ function createPeerConnection(peerId, username, isInitiator) {
 function removePeer(peerId) {
   const entry = peers.get(peerId);
   if (entry) {
+    if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
     entry.pc.close();
     peers.delete(peerId);
   }
@@ -674,22 +777,22 @@ function refreshLocalTileMode() {
   const tile = document.getElementById('tile-local');
   if (!tile) return;
   const video = tile.querySelector('video');
-  let avatar = tile.querySelector('.no-video-avatar');
+  let avatarEl = tile.querySelector('.no-video-avatar');
   if (camOn) {
     video.style.display = '';
-    if (avatar) avatar.remove();
+    if (avatarEl) avatarEl.remove();
   } else {
     video.style.display = 'none';
-    if (!avatar) {
-      avatar = document.createElement('div');
-      avatar.className = 'no-video-avatar';
-      avatar.textContent = initial(myUsername);
-      tile.insertBefore(avatar, tile.firstChild);
+    if (!avatarEl) {
+      avatarEl = document.createElement('div');
+      avatarEl.className = 'no-video-avatar';
+      avatarEl.appendChild(avatarCircleEl(myAvatar, 'big'));
+      tile.insertBefore(avatarEl, tile.firstChild);
     }
   }
 }
 
-function addRemoteVideoTile(peerId, username, stream) {
+function addRemoteVideoTile(peerId, username, stream, avatar) {
   let tile = document.getElementById('tile-' + peerId);
   if (!tile) {
     tile = document.createElement('div');
@@ -708,23 +811,38 @@ function addRemoteVideoTile(peerId, username, stream) {
   // reflect whether the sender is actually providing video — track.muted does.
   const hasVideoTrack = stream.getVideoTracks().some(t => !t.muted);
   video.style.display = hasVideoTrack ? '' : 'none';
+  updateRemoteNoVideoAvatar(tile, !hasVideoTrack, avatar);
 
   stream.getVideoTracks().forEach(t => {
-    t.onmute = () => { video.style.display = 'none'; };
-    t.onunmute = () => { video.style.display = ''; };
+    t.onmute = () => { video.style.display = 'none'; updateRemoteNoVideoAvatar(tile, true, avatar); };
+    t.onunmute = () => { video.style.display = ''; updateRemoteNoVideoAvatar(tile, false, avatar); };
   });
+}
+
+function updateRemoteNoVideoAvatar(tile, show, avatar) {
+  let avatarEl = tile.querySelector('.no-video-avatar');
+  if (show) {
+    if (!avatarEl) {
+      avatarEl = document.createElement('div');
+      avatarEl.className = 'no-video-avatar';
+      avatarEl.appendChild(avatarCircleEl(avatar || 1, 'big'));
+      tile.insertBefore(avatarEl, tile.firstChild);
+    }
+  } else if (avatarEl) {
+    avatarEl.remove();
+  }
 }
 
 function updatePeopleList(users, replaceAll) {
   if (replaceAll) peopleUl.innerHTML = '';
-  addPersonToList({ id: 'me', username: myUsername + ' (вы)' });
+  addPersonToList({ id: 'me', username: myUsername + ' (вы)', avatar: myAvatar });
   users.forEach(addPersonToList);
 }
 function addPersonToList(u) {
   if (document.getElementById('person-' + u.id)) return;
   const li = document.createElement('li');
   li.id = 'person-' + u.id;
-  li.innerHTML = `<span class="dot"></span><span>${escapeHtml(u.username)}</span>`;
+  li.innerHTML = `${avatarCircleHtml(u.avatar || 1, 'tiny')}<span>${escapeHtml(u.username)}</span>`;
   peopleUl.appendChild(li);
 }
 function removePersonFromList(id) {
@@ -781,20 +899,37 @@ function addMessage(msg) {
   }
 
   const time = new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const isMine = msg.fromUserId != null && msg.fromUserId === myUserId;
+
   const row = document.createElement('div');
-  row.className = 'msg-row';
+  row.className = 'msg-row' + (isMine ? ' mine' : ' theirs');
   if (msg.id != null) row.dataset.msgId = msg.id;
 
-  const div = document.createElement('div');
-  div.className = 'msg';
+  if (!isMine) {
+    row.appendChild(avatarCircleEl(msg.avatar || 1, 'tiny'));
+  }
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  if (!isMine) {
+    const nameLine = document.createElement('div');
+    nameLine.className = 'bubble-author';
+    nameLine.textContent = msg.username;
+    bubble.appendChild(nameLine);
+  }
   if (msg.text) {
-    div.innerHTML = `<span class="author">${escapeHtml(msg.username)}</span>${escapeHtml(msg.text)}<span class="time">${time}</span>`;
-  } else {
-    div.innerHTML = `<span class="author">${escapeHtml(msg.username)}</span><span class="time">${time}</span>`;
+    const textLine = document.createElement('div');
+    textLine.className = 'bubble-text';
+    textLine.textContent = msg.text;
+    bubble.appendChild(textLine);
   }
   if (msg.attachment) {
-    div.appendChild(renderAttachment(msg.attachment));
+    bubble.appendChild(renderAttachment(msg.attachment));
   }
+  const timeLine = document.createElement('div');
+  timeLine.className = 'bubble-time';
+  timeLine.textContent = time;
+  bubble.appendChild(timeLine);
 
   const actions = document.createElement('span');
   actions.className = 'msg-actions';
@@ -806,7 +941,6 @@ function addMessage(msg) {
   star.addEventListener('click', () => forwardToSelf(msg));
   actions.appendChild(star);
 
-  const isMine = msg.fromUserId != null && msg.fromUserId === myUserId;
   if (isMine && msg.id != null) {
     const del = document.createElement('button');
     del.className = 'msg-action-btn';
@@ -819,7 +953,7 @@ function addMessage(msg) {
     actions.appendChild(del);
   }
 
-  row.appendChild(div);
+  row.appendChild(bubble);
   row.appendChild(actions);
   messagesEl.appendChild(row);
   messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -899,31 +1033,74 @@ function stopScreenShare() {
 }
 
 // ---------- File / photo / video attachments ----------
-const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5MB
+const MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024; // 6MB after any compression
 
 attachBtn.addEventListener('click', () => fileInput.click());
 
-fileInput.addEventListener('change', () => {
+fileInput.addEventListener('change', async () => {
   const file = fileInput.files[0];
   fileInput.value = '';
   if (!file) return;
-  sendFileAttachment(file);
+  const toSend = file.type.startsWith('image/') ? await compressImage(file) : file;
+  sendFileAttachment(toSend);
 });
 
-function sendFileAttachment(file) {
+// Phone-camera photos are often 8-15MB — shrinking them client-side means "send photo"
+// actually succeeds instead of silently hitting the size limit.
+function compressImage(file) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      const MAX_DIM = 1600;
+      let { width, height } = img;
+      if (width > MAX_DIM || height > MAX_DIM) {
+        const scale = MAX_DIM / Math.max(width, height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob((blob) => {
+        if (!blob) { resolve(file); return; }
+        resolve(new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }));
+      }, 'image/jpeg', 0.82);
+    };
+    img.onerror = () => resolve(file); // not a decodable image — send as-is
+    img.src = objectUrl;
+  });
+}
+
+function sendFileAttachment(file, attempt = 1) {
   if (!socket || !activeRoomId) return;
   if (file.size > MAX_ATTACHMENT_BYTES) {
-    alert('Файл слишком большой. Максимум 5 МБ.');
+    alert('Файл слишком большой (максимум 6 МБ после сжатия).');
     return;
   }
   const reader = new FileReader();
   reader.onload = () => {
-    socket.emit('chat-file', {
-      dataUrl: reader.result,
-      mimeType: file.type,
-      filename: file.name
+    let settled = false;
+    socket.emit('chat-file', { dataUrl: reader.result, mimeType: file.type, filename: file.name }, (res) => {
+      settled = true;
+      if (!res || !res.ok) {
+        if (attempt < 2) {
+          setTimeout(() => sendFileAttachment(file, attempt + 1), 800);
+        } else {
+          alert('Не удалось отправить файл. Проверьте соединение и попробуйте ещё раз.');
+        }
+      }
     });
+    // Fallback in case the server doesn't answer (older deploy, dropped ack) —
+    // don't leave the user thinking it silently failed nor spam duplicates.
+    setTimeout(() => {
+      if (!settled && attempt < 2) sendFileAttachment(file, attempt + 1);
+    }, 6000);
   };
+  reader.onerror = () => alert('Не удалось прочитать файл.');
   reader.readAsDataURL(file);
 }
 
@@ -932,9 +1109,23 @@ let mediaRecorder = null;
 let recordedChunks = [];
 let recordingStream = null;
 
+function pickVoiceMimeType() {
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+  for (const type of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) {
+      return type;
+    }
+  }
+  return ''; // let the browser pick its own default
+}
+
 voiceBtn.addEventListener('click', async () => {
   if (mediaRecorder && mediaRecorder.state === 'recording') {
     mediaRecorder.stop();
+    return;
+  }
+  if (!window.MediaRecorder) {
+    alert('Этот браузер не поддерживает запись голосовых сообщений.');
     return;
   }
   try {
@@ -944,15 +1135,22 @@ voiceBtn.addEventListener('click', async () => {
     return;
   }
   recordedChunks = [];
-  mediaRecorder = new MediaRecorder(recordingStream);
+  const mimeType = pickVoiceMimeType();
+  try {
+    mediaRecorder = mimeType ? new MediaRecorder(recordingStream, { mimeType }) : new MediaRecorder(recordingStream);
+  } catch (e) {
+    mediaRecorder = new MediaRecorder(recordingStream);
+  }
   mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
   mediaRecorder.onstop = () => {
     recordingStream.getTracks().forEach(t => t.stop());
     voiceBtn.classList.remove('recording');
     voiceBtn.title = 'Голосовое сообщение';
-    const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+    const finalType = mediaRecorder.mimeType || 'audio/webm';
+    const blob = new Blob(recordedChunks, { type: finalType });
     if (blob.size === 0) return;
-    const file = new File([blob], 'voice-message.webm', { type: 'audio/webm' });
+    const ext = finalType.includes('mp4') ? 'm4a' : finalType.includes('ogg') ? 'ogg' : 'webm';
+    const file = new File([blob], `voice-message.${ext}`, { type: finalType });
     sendFileAttachment(file);
   };
   mediaRecorder.start();
