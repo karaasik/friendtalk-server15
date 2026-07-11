@@ -66,6 +66,7 @@ const callDeclineBtn = document.getElementById('call-decline-btn');
 
 // ---------- Chat elements ----------
 const roomNameLabel = document.getElementById('room-name-label');
+const callTimerEl = document.getElementById('call-timer');
 const videoGrid = document.getElementById('video-grid');
 const peopleUl = document.getElementById('people-ul');
 const messagesEl = document.getElementById('messages');
@@ -617,7 +618,12 @@ async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
   roomNameLabel.textContent = displayLabel;
   chatScreen.classList.toggle('text-only', textOnly);
   showScreen(chatScreen);
-  if (!textOnly) addLocalVideoTile();
+  if (!textOnly) {
+    addLocalVideoTile();
+    startCallTimer();
+  } else {
+    stopCallTimer();
+  }
 
   // Load persisted history for this room before live messages start arriving.
   try {
@@ -630,6 +636,35 @@ async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
   socket.emit('join-room', { roomId, token: authToken, username: myUsername, intent: textOnly ? 'text' : 'call' });
 }
 
+let callTimerInterval = null;
+let callStartTime = null;
+
+function startCallTimer() {
+  callStartTime = Date.now();
+  callTimerEl.textContent = '00:00';
+  callTimerEl.classList.remove('hidden');
+  if (callTimerInterval) clearInterval(callTimerInterval);
+  callTimerInterval = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
+    const mins = Math.floor(elapsed / 60);
+    const secs = elapsed % 60;
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    callTimerEl.textContent = h > 0
+      ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+      : `${String(m).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }, 1000);
+}
+
+function stopCallTimer() {
+  if (callTimerInterval) {
+    clearInterval(callTimerInterval);
+    callTimerInterval = null;
+  }
+  callStartTime = null;
+  callTimerEl.classList.add('hidden');
+}
+
 function leaveCurrentRoom() {
   if (socket) socket.emit('leave-room');
   activeRoomId = null;
@@ -640,6 +675,7 @@ function leaveCurrentRoom() {
   peers.forEach(({ pc }) => pc.close());
   peers.clear();
   chatScreen.classList.remove('text-only');
+  stopCallTimer();
 }
 
 async function getLocalMedia() {
@@ -1094,8 +1130,6 @@ function sendFileAttachment(file, attempt = 1) {
         }
       }
     });
-    // Fallback in case the server doesn't answer (older deploy, dropped ack) —
-    // don't leave the user thinking it silently failed nor spam duplicates.
     setTimeout(() => {
       if (!settled && attempt < 2) sendFileAttachment(file, attempt + 1);
     }, 6000);
@@ -1116,7 +1150,7 @@ function pickVoiceMimeType() {
       return type;
     }
   }
-  return ''; // let the browser pick its own default
+  return '';
 }
 
 voiceBtn.addEventListener('click', async () => {
