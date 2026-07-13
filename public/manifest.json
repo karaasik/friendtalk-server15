@@ -1,0 +1,15 @@
+{
+  "name": "karasik21",
+  "short_name": "karasik21",
+  "description": "Текст, голос и видео с друзьями",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0071e3",
+  "theme_color": "#0071e3",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
