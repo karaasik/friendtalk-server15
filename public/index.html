@@ -4,6 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>karasik21</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0071e3" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="karasik21" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -66,6 +72,7 @@
         <span id="my-username-label"></span>
       </button>
       <div class="controls">
+        <button id="admin-btn" class="control-btn hidden" title="Управление пользователями">🛠️</button>
         <button id="support-btn" class="control-btn" title="Поддержка">🆘</button>
         <button id="saved-btn" class="control-btn" title="Избранное">⭐</button>
         <button id="notif-btn" class="control-btn" title="Включить уведомления">🔔</button>
@@ -152,6 +159,15 @@
       <h3>Выберите аватарку</h3>
       <div id="avatar-grid" class="avatar-grid"></div>
       <button id="avatar-picker-close" class="pill-btn message" style="margin-top:16px;width:100%;">Готово</button>
+    </div>
+  </div>
+
+  <!-- Admin panel overlay -->
+  <div id="admin-panel" class="overlay hidden">
+    <div class="overlay-card admin-card">
+      <h3>Пользователи сайта</h3>
+      <div id="admin-user-list" class="admin-user-list"></div>
+      <button id="admin-panel-close" class="pill-btn message" style="margin-top:16px;width:100%;">Закрыть</button>
     </div>
   </div>
 
