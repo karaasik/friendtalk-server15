@@ -94,6 +94,12 @@ async function initDb() {
 initDb().catch(err => console.error('Ошибка инициализации БД:', err));
 
 const SUPPORT_USERNAME = 'support';
+const ADMIN_USERNAME = 'admin';
+
+function requireAdmin(req, res, next) {
+  if (req.username !== ADMIN_USERNAME) return res.status(403).json({ error: 'Только для администратора' });
+  next();
+}
 
 // Ensures every new user is automatically friends with the reserved "support" account, if it exists.
 async function autoFriendSupport(newUserId) {
@@ -200,7 +206,12 @@ app.post('/api/login', authLimiter, async (req, res) => {
 app.get('/api/me', requireAuth, async (req, res) => {
   try {
     const result = await pool.query('SELECT avatar FROM users WHERE id = $1', [req.userId]);
-    res.json({ id: req.userId, username: req.username, avatar: result.rows[0] ? result.rows[0].avatar : 1 });
+    res.json({
+      id: req.userId,
+      username: req.username,
+      avatar: result.rows[0] ? result.rows[0].avatar : 1,
+      isAdmin: req.username === ADMIN_USERNAME
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка сервера' });
@@ -296,6 +307,47 @@ app.get('/api/support', requireAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// ---------- Admin: full moderation control over accounts ----------
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, username, created_at, last_seen_at FROM users ORDER BY created_at DESC`
+    );
+    res.json({
+      users: result.rows.map(u => ({
+        id: u.id,
+        username: u.username,
+        online: onlineUsers.has(u.id),
+        createdAt: new Date(u.created_at).getTime(),
+        lastSeen: u.last_seen_at ? new Date(u.last_seen_at).getTime() : null
+      }))
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось загрузить пользователей' });
+  }
+});
+
+app.delete('/api/admin/users/:userId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const targetId = parseInt(req.params.userId, 10);
+    if (!targetId) return res.status(400).json({ error: 'Некорректный id' });
+    if (targetId === req.userId) return res.status(400).json({ error: 'Нельзя удалить свой собственный аккаунт' });
+
+    const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING username', [targetId]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Пользователь не найден' });
+
+    // Force any active session of the deleted user to log out immediately.
+    io.to('user-' + targetId).emit('force-logout');
+    onlineUsers.delete(targetId);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось удалить пользователя' });
   }
 });
 
