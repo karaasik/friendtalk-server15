@@ -22,6 +22,13 @@ const ICE_SERVERS = [
 
 const API_BASE = location.origin;
 
+// Registering the service worker is what makes the browser offer "Install app".
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/service-worker.js').catch(() => { /* not critical */ });
+  });
+}
+
 // ---------- Screens ----------
 const authScreen = document.getElementById('auth-screen');
 const friendsScreen = document.getElementById('friends-screen');
@@ -41,6 +48,10 @@ const themeBtn = document.getElementById('theme-btn');
 const themeBtnChat = document.getElementById('theme-btn-chat');
 const supportBtn = document.getElementById('support-btn');
 const savedBtn = document.getElementById('saved-btn');
+const adminBtn = document.getElementById('admin-btn');
+const adminPanel = document.getElementById('admin-panel');
+const adminUserList = document.getElementById('admin-user-list');
+const adminPanelClose = document.getElementById('admin-panel-close');
 const profileBtn = document.getElementById('profile-btn');
 const myAvatarSlot = document.getElementById('my-avatar-slot');
 const avatarPicker = document.getElementById('avatar-picker');
@@ -84,6 +95,7 @@ let authToken = null;
 let myUserId = null;
 let myUsername = '';
 let myAvatar = 1;
+let isAdmin = false;
 
 let socket = null;
 let localStream = null;
@@ -226,6 +238,8 @@ async function verifySession() {
     myUserId = me.id;
     myUsername = me.username;
     myAvatar = me.avatar || 1;
+    isAdmin = !!me.isAdmin;
+    adminBtn.classList.toggle('hidden', !isAdmin);
     connectPersistentSocket();
     enterFriendsScreen();
   } catch (e) {
@@ -272,6 +286,15 @@ function connectPersistentSocket() {
   socket.on('message-deleted', ({ id }) => {
     const row = document.querySelector(`[data-msg-id="${id}"]`);
     if (row) row.remove();
+  });
+
+  socket.on('force-logout', () => {
+    alert('Ваш аккаунт был удалён администратором.');
+    authToken = null;
+    try { localStorage.removeItem('ft_token'); } catch (e) {}
+    socket.disconnect();
+    socket = null;
+    showScreen(authScreen);
   });
 
   registerSocketHandlers();
@@ -404,6 +427,53 @@ function renderAvatarGrid() {
       }
     });
     avatarGrid.appendChild(btn);
+  });
+}
+
+adminBtn.addEventListener('click', () => {
+  loadAdminUsers();
+  adminPanel.classList.remove('hidden');
+});
+
+adminPanelClose.addEventListener('click', () => {
+  adminPanel.classList.add('hidden');
+});
+
+async function loadAdminUsers() {
+  adminUserList.innerHTML = '<p class="hint">Загрузка…</p>';
+  try {
+    const data = await apiRequest('/api/admin/users');
+    renderAdminUsers(data.users);
+  } catch (e) {
+    adminUserList.innerHTML = '<p class="hint">Не удалось загрузить список.</p>';
+  }
+}
+
+function renderAdminUsers(users) {
+  adminUserList.innerHTML = '';
+  users.forEach(u => {
+    const row = document.createElement('div');
+    row.className = 'admin-user-row';
+    const status = u.online ? 'в сети' : (u.lastSeen ? formatLastSeen(u.lastSeen) : 'не в сети');
+    row.innerHTML = `
+      <span>${escapeHtml(u.username)}${u.username === myUsername ? ' (вы)' : ''} <span class="friend-status">${status}</span></span>
+      <button class="pill-btn decline" data-id="${u.id}">Удалить</button>`;
+    const delBtn = row.querySelector('button');
+    if (u.username === myUsername) {
+      delBtn.disabled = true;
+      delBtn.style.opacity = 0.4;
+    } else {
+      delBtn.addEventListener('click', async () => {
+        if (!confirm(`Полностью удалить пользователя ${u.username}? Это действие необратимо.`)) return;
+        try {
+          await apiRequest('/api/admin/users/' + u.id, { method: 'DELETE' });
+          loadAdminUsers();
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+    }
+    adminUserList.appendChild(row);
   });
 }
 
@@ -674,6 +744,7 @@ function leaveCurrentRoom() {
   }
   peers.forEach(({ pc }) => pc.close());
   peers.clear();
+  speakingDetectors.forEach((_, tileId) => detachSpeakingDetector(tileId));
   chatScreen.classList.remove('text-only');
   stopCallTimer();
 }
@@ -784,6 +855,44 @@ function createPeerConnection(peerId, username, isInitiator, avatar) {
   }
 }
 
+// ---------- Speaking indicator (highlights whoever is currently talking) ----------
+let audioCtx = null;
+const speakingDetectors = new Map(); // key (tile id) -> { interval, source }
+
+function attachSpeakingDetector(stream, tileId) {
+  if (speakingDetectors.has(tileId)) return;
+  if (!stream.getAudioTracks().length) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+
+    const interval = setInterval(() => {
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += Math.abs(data[i] - 128);
+      const level = sum / data.length;
+      const tile = document.getElementById(tileId);
+      if (tile) tile.classList.toggle('speaking', level > 6);
+    }, 200);
+
+    speakingDetectors.set(tileId, { interval, source });
+  } catch (e) {
+    console.warn('Индикатор голоса недоступен:', e);
+  }
+}
+
+function detachSpeakingDetector(tileId) {
+  const entry = speakingDetectors.get(tileId);
+  if (!entry) return;
+  clearInterval(entry.interval);
+  try { entry.source.disconnect(); } catch (e) { /* ignore */ }
+  speakingDetectors.delete(tileId);
+}
+
 function removePeer(peerId) {
   const entry = peers.get(peerId);
   if (entry) {
@@ -791,6 +900,7 @@ function removePeer(peerId) {
     entry.pc.close();
     peers.delete(peerId);
   }
+  detachSpeakingDetector('tile-' + peerId);
   const tile = document.getElementById('tile-' + peerId);
   if (tile) tile.remove();
 }
@@ -807,6 +917,7 @@ function addLocalVideoTile() {
   video.srcObject = localStream;
   videoGrid.appendChild(tile);
   refreshLocalTileMode();
+  attachSpeakingDetector(localStream, 'tile-local');
 }
 
 function refreshLocalTileMode() {
@@ -853,6 +964,8 @@ function addRemoteVideoTile(peerId, username, stream, avatar) {
     t.onmute = () => { video.style.display = 'none'; updateRemoteNoVideoAvatar(tile, true, avatar); };
     t.onunmute = () => { video.style.display = ''; updateRemoteNoVideoAvatar(tile, false, avatar); };
   });
+
+  attachSpeakingDetector(stream, 'tile-' + peerId);
 }
 
 function updateRemoteNoVideoAvatar(tile, show, avatar) {
