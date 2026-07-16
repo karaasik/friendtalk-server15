@@ -35,7 +35,10 @@
         </label>
         <label class="field">
           <span>Пароль</span>
-          <input id="login-password" type="password" autocomplete="current-password" required />
+          <div style="position:relative;">
+            <input id="login-password" type="password" autocomplete="current-password" required style="padding-right:40px;" />
+            <span id="login-password-toggle" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;opacity:0.6;">👁️</span>
+          </div>
         </label>
         <button type="submit" class="btn-primary">Войти</button>
       </form>
@@ -47,7 +50,10 @@
         </label>
         <label class="field">
           <span>Пароль</span>
-          <input id="register-password" type="password" autocomplete="new-password" required />
+          <div style="position:relative;">
+            <input id="register-password" type="password" autocomplete="new-password" required style="padding-right:40px;" />
+            <span id="register-password-toggle" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;opacity:0.6;">👁️</span>
+          </div>
         </label>
         <button type="submit" class="btn-primary">Создать аккаунт</button>
       </form>
@@ -56,7 +62,7 @@
     </div>
   </div>
 
-  <!-- Incoming call banner (shown over any screen) -->
+  <!-- Incoming call banner -->
   <div id="call-banner" class="call-banner hidden">
     <span class="logo-mark small">k21</span>
     <span id="call-banner-text"></span>
@@ -106,12 +112,17 @@
       </section>
 
       <section class="group-col">
-        <h3>Общая комната по названию</h3>
-        <p class="hint">Для звонка сразу с несколькими людьми — договоритесь о названии комнаты и введите его все.</p>
+        <h3>Общая комната</h3>
+        <p class="hint">Введите название или код комнаты.</p>
         <form id="group-room-form" class="add-friend-form">
-          <input id="group-room-input" type="text" placeholder="напр. наша-тусовка" maxlength="64" autocomplete="off" />
+          <input id="group-room-input" type="text" placeholder="название или 6-значный код" maxlength="64" autocomplete="off" />
           <button type="submit">Войти</button>
         </form>
+        <!-- NEW: buttons for room code -->
+        <div style="display:flex; gap:8px; margin-top:12px;">
+          <button id="create-room-btn" class="pill-btn message" style="flex:1;">Создать комнату с кодом</button>
+          <button id="join-room-btn" class="pill-btn message" style="flex:1;">Войти по коду</button>
+        </div>
       </section>
     </main>
   </div>
@@ -128,6 +139,8 @@
         <button id="toggle-mic" class="control-btn active" title="Микрофон">🎤</button>
         <button id="toggle-cam" class="control-btn" title="Камера">📷</button>
         <button id="toggle-screen" class="control-btn" title="Демонстрация экрана">🖥️</button>
+        <!-- NEW: flip camera -->
+        <button id="flip-cam-btn" class="control-btn" title="Перевернуть камеру">🔄</button>
         <button id="theme-btn-chat" class="control-btn" title="Светлая/тёмная тема">🌙</button>
         <button id="leave-btn" class="control-btn danger" title="Назад к друзьям">✕</button>
       </div>
@@ -158,6 +171,14 @@
     <div class="overlay-card">
       <h3>Выберите аватарку</h3>
       <div id="avatar-grid" class="avatar-grid"></div>
+      <!-- NEW: nickname change -->
+      <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;">
+        <label class="field">
+          <span>Отображаемое имя (ник)</span>
+          <input id="nickname-input" type="text" placeholder="Ваш ник" maxlength="24" />
+        </label>
+        <button id="save-nickname-btn" class="btn-primary" style="margin-top:0;">Сохранить ник</button>
+      </div>
       <button id="avatar-picker-close" class="pill-btn message" style="margin-top:16px;width:100%;">Готово</button>
     </div>
   </div>
@@ -168,6 +189,14 @@
       <h3>Пользователи сайта</h3>
       <div id="admin-user-list" class="admin-user-list"></div>
       <button id="admin-panel-close" class="pill-btn message" style="margin-top:16px;width:100%;">Закрыть</button>
+    </div>
+  </div>
+
+  <!-- NEW: Photo viewer overlay -->
+  <div id="photo-viewer" class="overlay hidden">
+    <div class="overlay-card" style="max-width:90%; background:transparent; box-shadow:none; padding:0;">
+      <img id="photo-viewer-img" src="" alt="" style="width:100%;height:auto;max-height:90vh;border-radius:12px;object-fit:contain;" />
+      <button id="photo-viewer-close" class="pill-btn message" style="margin-top:12px;width:100%;">Закрыть</button>
     </div>
   </div>
 
