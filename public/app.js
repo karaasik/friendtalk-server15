@@ -1,4 +1,5 @@
 // FriendTalk client v2 — accounts, friends, rooms with voice/video
+// NEW: room codes, photo viewer, flip camera, nickname change, password toggle, stricter password validation.
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -22,7 +23,6 @@ const ICE_SERVERS = [
 
 const API_BASE = location.origin;
 
-// Registering the service worker is what makes the browser offer "Install app".
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/service-worker.js').catch(() => { /* not critical */ });
@@ -90,6 +90,17 @@ const attachBtn = document.getElementById('attach-btn');
 const fileInput = document.getElementById('file-input');
 const voiceBtn = document.getElementById('voice-btn');
 const leaveBtn = document.getElementById('leave-btn');
+// NEW: flip camera button
+const flipCamBtn = document.getElementById('flip-cam-btn');
+
+// NEW: photo viewer elements
+const photoViewer = document.getElementById('photo-viewer');
+const photoViewerImg = document.getElementById('photo-viewer-img');
+const photoViewerClose = document.getElementById('photo-viewer-close');
+
+// NEW: nickname input
+const nicknameInput = document.getElementById('nickname-input');
+const saveNicknameBtn = document.getElementById('save-nickname-btn');
 
 let authToken = null;
 let myUserId = null;
@@ -102,13 +113,15 @@ let localStream = null;
 let micOn = true;
 let camOn = false;
 let myRoom = '';
-let activeRoomId = null; // room currently open in the chat screen, or null when on friends screen
+let activeRoomId = null;
 const peers = new Map();
-const unreadCounts = new Map(); // friendId -> count
-let friendsCache = []; // last loaded friends list, used to resolve notifications to names
+const unreadCounts = new Map();
+let friendsCache = [];
+
+// NEW: camera facing mode
+let facingMode = 'user';
 
 // ---------- Avatars ----------
-// 15 hand-picked options: a friendly emoji over a soft gradient, no external images needed.
 const AVATARS = [
   { emoji: '🐱', from: '#ff9a56', to: '#ff6b6b' },
   { emoji: '🐶', from: '#4facfe', to: '#00f2fe' },
@@ -240,6 +253,8 @@ async function verifySession() {
     myAvatar = me.avatar || 1;
     isAdmin = !!me.isAdmin;
     adminBtn.classList.toggle('hidden', !isAdmin);
+    // NEW: загрузить ник в поле
+    if (nicknameInput) nicknameInput.value = me.nickname || me.username;
     connectPersistentSocket();
     enterFriendsScreen();
   } catch (e) {
@@ -249,8 +264,6 @@ async function verifySession() {
   }
 }
 
-// A single socket connection lives for the whole session (from login until logout),
-// so we can receive call/message notifications even while just browsing the friends screen.
 function connectPersistentSocket() {
   if (socket) return;
   socket = io(API_BASE, { transports: ['websocket', 'polling'] });
@@ -265,7 +278,7 @@ function connectPersistentSocket() {
   });
 
   socket.on('notify-message', ({ roomId, fromUsername, preview }) => {
-    if (activeRoomId === roomId) return; // already looking at this conversation
+    if (activeRoomId === roomId) return;
     const friendId = friendIdFromRoom(roomId);
     if (friendId != null) {
       unreadCounts.set(friendId, (unreadCounts.get(friendId) || 0) + 1);
@@ -342,6 +355,27 @@ tabBtns.forEach(btn => {
   });
 });
 
+// NEW: password toggle eyes
+document.getElementById('login-password-toggle').addEventListener('click', function() {
+  const input = document.getElementById('login-password');
+  input.type = input.type === 'password' ? 'text' : 'password';
+});
+document.getElementById('register-password-toggle').addEventListener('click', function() {
+  const input = document.getElementById('register-password');
+  input.type = input.type === 'password' ? 'text' : 'password';
+});
+
+// NEW: client-side password validation
+function validatePassword(pw) {
+  const errors = [];
+  if (pw.length < 8) errors.push('минимум 8 символов');
+  if (!/[a-z]/.test(pw)) errors.push('строчная буква');
+  if (!/[A-Z]/.test(pw)) errors.push('заглавная буква');
+  if (!/[0-9]/.test(pw)) errors.push('цифра');
+  if (!/[!@#$%^&*()_+\-=\[\]{};:'",.<>?\/|\\]/.test(pw)) errors.push('специальный символ');
+  return errors;
+}
+
 loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   authError.textContent = '';
@@ -360,6 +394,14 @@ registerForm.addEventListener('submit', async (e) => {
   authError.textContent = '';
   const username = document.getElementById('register-username').value.trim();
   const password = document.getElementById('register-password').value;
+
+  // NEW: validate password on client
+  const errors = validatePassword(password);
+  if (errors.length > 0) {
+    authError.textContent = 'Пароль должен содержать: ' + errors.join(', ');
+    return;
+  }
+
   try {
     const data = await apiRequest('/api/register', { method: 'POST', body: { username, password } });
     onAuthSuccess(data);
@@ -405,6 +447,23 @@ profileBtn.addEventListener('click', () => {
 
 avatarPickerClose.addEventListener('click', () => {
   avatarPicker.classList.add('hidden');
+});
+
+// NEW: save nickname
+saveNicknameBtn.addEventListener('click', async () => {
+  const nick = nicknameInput.value.trim();
+  if (nick.length < 2 || nick.length > 24) {
+    alert('Ник должен быть от 2 до 24 символов.');
+    return;
+  }
+  try {
+    await apiRequest('/api/me/nickname', { method: 'PATCH', body: { nickname: nick } });
+    myUsername = nick;
+    myUsernameLabel.textContent = myUsername;
+    alert('Ник обновлён!');
+  } catch (e) {
+    alert(e.message);
+  }
 });
 
 function renderAvatarGrid() {
@@ -455,8 +514,9 @@ function renderAdminUsers(users) {
     const row = document.createElement('div');
     row.className = 'admin-user-row';
     const status = u.online ? 'в сети' : (u.lastSeen ? formatLastSeen(u.lastSeen) : 'не в сети');
+    // NEW: show nickname and dates
     row.innerHTML = `
-      <span>${escapeHtml(u.username)}${u.username === myUsername ? ' (вы)' : ''} <span class="friend-status">${status}</span></span>
+      <span>${escapeHtml(u.username)}${u.nickname ? ' (' + escapeHtml(u.nickname) + ')' : ''} <span class="friend-status">${status}</span></span>
       <button class="pill-btn decline" data-id="${u.id}">Удалить</button>`;
     const delBtn = row.querySelector('button');
     if (u.username === myUsername) {
@@ -524,7 +584,6 @@ function renderFriendsFromCache() {
 }
 
 function renderFriends({ friends, incoming, outgoing }) {
-  // Incoming requests
   incomingBlock.classList.toggle('hidden', incoming.length === 0);
   incomingList.innerHTML = '';
   incoming.forEach(r => {
@@ -540,7 +599,6 @@ function renderFriends({ friends, incoming, outgoing }) {
     incomingList.appendChild(li);
   });
 
-  // Outgoing requests
   outgoingBlock.classList.toggle('hidden', outgoing.length === 0);
   outgoingList.innerHTML = '';
   outgoing.forEach(r => {
@@ -652,12 +710,50 @@ function startFriendChat(friendId, friendUsername) {
   joinRoom(friendRoomId(friendId), `Переписка с ${friendUsername}`, { textOnly: true });
 }
 
+// NEW: комнаты с кодом
+async function createRoomWithCode() {
+  const name = prompt('Введите название комнаты:');
+  if (!name) return;
+  try {
+    const data = await apiRequest('/api/room/create', { method: 'POST', body: { name } });
+    alert(`Комната "${name}" создана! Код: ${data.code}\nПоделитесь кодом с друзьями.`);
+    joinRoom(`group-${data.roomId}`, name, { textOnly: true });
+  } catch (e) {
+    alert('Ошибка: ' + e.message);
+  }
+}
+
+async function joinRoomByCode() {
+  const code = prompt('Введите код комнаты:');
+  if (!code) return;
+  try {
+    const data = await apiRequest(`/api/room/by-code?code=${encodeURIComponent(code)}`);
+    joinRoom(data.roomId, data.name, { textOnly: true });
+  } catch (e) {
+    alert('Не удалось войти: ' + e.message);
+  }
+}
+
 groupRoomForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const roomId = groupRoomInput.value.trim();
   if (!roomId) return;
-  joinRoom(roomId, roomId, { textOnly: false });
+  // Если ввели код – пытаемся найти по коду, иначе как обычную комнату
+  if (roomId.length === 6 && /^[A-Z0-9]{6}$/.test(roomId)) {
+    joinRoomByCodeWithInput(roomId);
+  } else {
+    joinRoom(roomId, roomId, { textOnly: false });
+  }
 });
+
+async function joinRoomByCodeWithInput(code) {
+  try {
+    const data = await apiRequest(`/api/room/by-code?code=${encodeURIComponent(code)}`);
+    joinRoom(data.roomId, data.name, { textOnly: true });
+  } catch (e) {
+    alert('Комната не найдена: ' + e.message);
+  }
+}
 
 // ---------- Room / chat / WebRTC ----------
 async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
@@ -695,7 +791,6 @@ async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
     stopCallTimer();
   }
 
-  // Load persisted history for this room before live messages start arriving.
   try {
     const history = await apiRequest('/api/messages?roomId=' + encodeURIComponent(roomId));
     history.messages.forEach(addMessage);
@@ -814,7 +909,7 @@ function createPeerConnection(peerId, username, isInitiator, avatar) {
   };
 
   function attemptReconnect() {
-    try { pc.restartIce(); } catch (e) { /* older browsers: fall back to renegotiation below */ }
+    try { pc.restartIce(); } catch (e) { /* older browsers */ }
     if (isInitiator) {
       pc.createOffer({ iceRestart: true })
         .then(offer => pc.setLocalDescription(offer))
@@ -823,10 +918,6 @@ function createPeerConnection(peerId, username, isInitiator, avatar) {
     }
   }
 
-  // Free STUN/TURN relays sometimes cause a brief "disconnected" blip rather than an
-  // outright "failed" state — waiting a few seconds before restarting avoids fighting
-  // a connection that's about to recover on its own, while still catching real drops
-  // (this is the fix for calls that quietly go silent after a few minutes).
   pc.oniceconnectionstatechange = () => {
     const state = pc.iceConnectionState;
     if (peerEntry.reconnectTimer) {
@@ -855,9 +946,9 @@ function createPeerConnection(peerId, username, isInitiator, avatar) {
   }
 }
 
-// ---------- Speaking indicator (highlights whoever is currently talking) ----------
+// ---------- Speaking indicator ----------
 let audioCtx = null;
-const speakingDetectors = new Map(); // key (tile id) -> { interval, source }
+const speakingDetectors = new Map();
 
 function attachSpeakingDetector(stream, tileId) {
   if (speakingDetectors.has(tileId)) return;
@@ -939,6 +1030,40 @@ function refreshLocalTileMode() {
   }
 }
 
+// NEW: flip camera
+flipCamBtn.addEventListener('click', async () => {
+  if (!localStream) return;
+  const videoTrack = localStream.getVideoTracks()[0];
+  if (!videoTrack) {
+    alert('Камера не активна.');
+    return;
+  }
+  facingMode = (facingMode === 'user') ? 'environment' : 'user';
+  try {
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: { facingMode: facingMode }
+    });
+    const newVideoTrack = newStream.getVideoTracks()[0];
+    const newAudioTrack = newStream.getAudioTracks()[0];
+    localStream.removeTrack(videoTrack);
+    localStream.addTrack(newVideoTrack);
+    if (newAudioTrack) {
+      const oldAudio = localStream.getAudioTracks()[0];
+      if (oldAudio) localStream.removeTrack(oldAudio);
+      localStream.addTrack(newAudioTrack);
+    }
+    peers.forEach(({ pc }) => {
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+      if (sender) sender.replaceTrack(newVideoTrack);
+    });
+    refreshLocalTileMode();
+  } catch (e) {
+    alert('Не удалось переключить камеру: ' + e.message);
+    facingMode = (facingMode === 'user') ? 'environment' : 'user';
+  }
+});
+
 function addRemoteVideoTile(peerId, username, stream, avatar) {
   let tile = document.getElementById('tile-' + peerId);
   if (!tile) {
@@ -954,8 +1079,6 @@ function addRemoteVideoTile(peerId, username, stream, avatar) {
   const video = tile.querySelector('video');
   video.srcObject = stream;
 
-  // Note: on the receiving end, track.enabled is a local-only flag and does not
-  // reflect whether the sender is actually providing video — track.muted does.
   const hasVideoTrack = stream.getVideoTracks().some(t => !t.muted);
   video.style.display = hasVideoTrack ? '' : 'none';
   updateRemoteNoVideoAvatar(tile, !hasVideoTrack, avatar);
@@ -1015,6 +1138,12 @@ function renderAttachment(attachment) {
     const img = document.createElement('img');
     img.src = attachment.dataUrl;
     img.alt = attachment.filename || 'изображение';
+    img.style.cursor = 'pointer';
+    // NEW: open photo in viewer
+    img.addEventListener('click', () => {
+      photoViewerImg.src = attachment.dataUrl;
+      photoViewer.classList.remove('hidden');
+    });
     wrap.appendChild(img);
   } else if (type.startsWith('video/')) {
     const video = document.createElement('video');
@@ -1036,6 +1165,12 @@ function renderAttachment(attachment) {
   }
   return wrap;
 }
+
+// NEW: photo viewer close
+photoViewerClose.addEventListener('click', () => photoViewer.classList.add('hidden'));
+photoViewer.addEventListener('click', (e) => {
+  if (e.target === photoViewer) photoViewer.classList.add('hidden');
+});
 
 function addMessage(msg) {
   if (msg.system) {
@@ -1134,7 +1269,7 @@ toggleScreenBtn.addEventListener('click', async () => {
   try {
     screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
   } catch (e) {
-    return; // user cancelled the picker
+    return;
   }
 
   const screenTrack = screenStream.getVideoTracks()[0];
@@ -1182,7 +1317,7 @@ function stopScreenShare() {
 }
 
 // ---------- File / photo / video attachments ----------
-const MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024; // 6MB after any compression
+const MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024;
 
 attachBtn.addEventListener('click', () => fileInput.click());
 
@@ -1194,8 +1329,6 @@ fileInput.addEventListener('change', async () => {
   sendFileAttachment(toSend);
 });
 
-// Phone-camera photos are often 8-15MB — shrinking them client-side means "send photo"
-// actually succeeds instead of silently hitting the size limit.
 function compressImage(file) {
   return new Promise((resolve) => {
     const img = new Image();
@@ -1219,7 +1352,7 @@ function compressImage(file) {
         resolve(new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }));
       }, 'image/jpeg', 0.82);
     };
-    img.onerror = () => resolve(file); // not a decodable image — send as-is
+    img.onerror = () => resolve(file);
     img.src = objectUrl;
   });
 }
