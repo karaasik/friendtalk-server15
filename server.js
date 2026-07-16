@@ -53,6 +53,7 @@ async function initDb() {
   `);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar INTEGER NOT NULL DEFAULT 1;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ DEFAULT now();`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS nickname TEXT;`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY,
@@ -156,7 +157,10 @@ app.post('/api/register', authLimiter, async (req, res) => {
     password = String(password || '');
 
     if (username.length < 3) return res.status(400).json({ error: 'Имя пользователя должно быть не короче 3 символов' });
-    if (password.length < 4) return res.status(400).json({ error: 'Пароль должен быть не короче 4 символов' });
+    if (password.length < 8) return res.status(400).json({ error: 'Пароль должен быть не короче 8 символов' });
+    if (!/[a-zA-Zа-яА-Я]/.test(password) || !/[0-9]/.test(password)) {
+      return res.status(400).json({ error: 'Пароль должен содержать и буквы, и цифры' });
+    }
 
     const existing = await pool.query('SELECT id FROM users WHERE username = $1', [username]);
     if (existing.rows.length > 0) return res.status(400).json({ error: 'Это имя уже занято' });
@@ -205,10 +209,11 @@ app.post('/api/login', authLimiter, async (req, res) => {
 
 app.get('/api/me', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query('SELECT avatar FROM users WHERE id = $1', [req.userId]);
+    const result = await pool.query('SELECT avatar, nickname FROM users WHERE id = $1', [req.userId]);
     res.json({
       id: req.userId,
       username: req.username,
+      nickname: result.rows[0] ? result.rows[0].nickname : null,
       avatar: result.rows[0] ? result.rows[0].avatar : 1,
       isAdmin: req.username === ADMIN_USERNAME
     });
@@ -227,6 +232,20 @@ app.patch('/api/me/avatar', requireAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Не удалось обновить аватарку' });
+  }
+});
+
+app.patch('/api/me/nickname', requireAuth, async (req, res) => {
+  try {
+    let nickname = String((req.body || {}).nickname || '').trim();
+    if (nickname.length < 2 || nickname.length > 24) {
+      return res.status(400).json({ error: 'Ник должен быть от 2 до 24 символов' });
+    }
+    await pool.query('UPDATE users SET nickname = $1 WHERE id = $2', [nickname, req.userId]);
+    res.json({ ok: true, nickname });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось сохранить ник' });
   }
 });
 
@@ -314,12 +333,13 @@ app.get('/api/support', requireAuth, async (req, res) => {
 app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, username, created_at, last_seen_at FROM users ORDER BY created_at DESC`
+      `SELECT id, username, nickname, created_at, last_seen_at FROM users ORDER BY created_at DESC`
     );
     res.json({
       users: result.rows.map(u => ({
         id: u.id,
         username: u.username,
+        nickname: u.nickname,
         online: onlineUsers.has(u.id),
         createdAt: new Date(u.created_at).getTime(),
         lastSeen: u.last_seen_at ? new Date(u.last_seen_at).getTime() : null
@@ -351,6 +371,31 @@ app.delete('/api/admin/users/:userId', requireAuth, requireAdmin, async (req, re
   }
 });
 
+// Passwords are one-way hashed and can never be viewed by anyone, including admins —
+// this lets an admin help someone who's locked out by setting a new password instead.
+app.post('/api/admin/users/:userId/reset-password', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const targetId = parseInt(req.params.userId, 10);
+    const newPassword = String((req.body || {}).newPassword || '');
+    if (!targetId) return res.status(400).json({ error: 'Некорректный id' });
+    if (newPassword.length < 8 || !/[a-zA-Zа-яА-Я]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      return res.status(400).json({ error: 'Пароль должен быть от 8 символов и содержать буквы и цифры' });
+    }
+    const hash = await bcrypt.hash(newPassword, 10);
+    const result = await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2 RETURNING username', [hash, targetId]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Пользователь не найден' });
+
+    // Invalidate existing sessions so the old password (and any stolen token) stops working.
+    await pool.query('DELETE FROM sessions WHERE user_id = $1', [targetId]);
+    io.to('user-' + targetId).emit('force-logout');
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось сбросить пароль' });
+  }
+});
+
 app.delete('/api/friends/:friendId', requireAuth, async (req, res) => {
   try {
     const friendId = parseInt(req.params.friendId, 10);
@@ -370,7 +415,7 @@ app.delete('/api/friends/:friendId', requireAuth, async (req, res) => {
 app.get('/api/friends', requireAuth, async (req, res) => {
   try {
     const friends = await pool.query(
-      `SELECT u.id, u.username, u.last_seen_at, u.avatar FROM friend_requests fr
+      `SELECT u.id, u.username, u.nickname, u.last_seen_at, u.avatar FROM friend_requests fr
        JOIN users u ON u.id = CASE WHEN fr.from_user = $1 THEN fr.to_user ELSE fr.from_user END
        WHERE fr.status = 'accepted' AND (fr.from_user = $1 OR fr.to_user = $1)
          AND u.username != $2
@@ -379,7 +424,7 @@ app.get('/api/friends', requireAuth, async (req, res) => {
     );
 
     const incoming = await pool.query(
-      `SELECT fr.id, u.username, u.avatar FROM friend_requests fr
+      `SELECT fr.id, u.username, u.nickname, u.avatar FROM friend_requests fr
        JOIN users u ON u.id = fr.from_user
        WHERE fr.to_user = $1 AND fr.status = 'pending'
        ORDER BY fr.created_at DESC`,
@@ -387,7 +432,7 @@ app.get('/api/friends', requireAuth, async (req, res) => {
     );
 
     const outgoing = await pool.query(
-      `SELECT fr.id, u.username, u.avatar FROM friend_requests fr
+      `SELECT fr.id, u.username, u.nickname, u.avatar FROM friend_requests fr
        JOIN users u ON u.id = fr.to_user
        WHERE fr.from_user = $1 AND fr.status = 'pending'
        ORDER BY fr.created_at DESC`,
@@ -397,13 +442,13 @@ app.get('/api/friends', requireAuth, async (req, res) => {
     res.json({
       friends: friends.rows.map(f => ({
         id: f.id,
-        username: f.username,
+        username: f.nickname || f.username,
         avatar: f.avatar,
         online: onlineUsers.has(f.id),
         lastSeen: f.last_seen_at ? new Date(f.last_seen_at).getTime() : null
       })),
-      incoming: incoming.rows,
-      outgoing: outgoing.rows
+      incoming: incoming.rows.map(r => ({ id: r.id, username: r.nickname || r.username, avatar: r.avatar })),
+      outgoing: outgoing.rows.map(r => ({ id: r.id, username: r.nickname || r.username, avatar: r.avatar }))
     });
   } catch (err) {
     console.error(err);
@@ -505,10 +550,12 @@ function otherDmParticipant(roomId, myUserId) {
 async function sessionFromToken(token) {
   if (!token) return null;
   const result = await pool.query(
-    `SELECT u.id, u.username, u.avatar FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = $1`,
+    `SELECT u.id, u.username, u.nickname, u.avatar FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = $1`,
     [token]
   );
-  return result.rows.length ? { id: result.rows[0].id, username: result.rows[0].username, avatar: result.rows[0].avatar } : null;
+  if (!result.rows.length) return null;
+  const row = result.rows[0];
+  return { id: row.id, username: row.nickname || row.username, avatar: row.avatar };
 }
 
 async function getFriendIds(userId) {
