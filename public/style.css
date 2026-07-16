@@ -560,3 +560,59 @@ html[data-theme="dark"] .topbar { background: rgba(28,28,30,0.72); }
   .video-tile { width: 220px; }
   .friends-main { flex-direction: column; }
 }
+/* NEW: Mobile responsiveness */
+@media (max-width: 640px) {
+  .topbar {
+    padding: 8px 10px;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .room-info { font-size: 13px; }
+  .control-btn {
+    width: 30px;
+    height: 30px;
+    font-size: 13px;
+  }
+  .friends-main {
+    padding: 12px 10px;
+  }
+  .friends-col, .group-col {
+    min-width: 100%;
+  }
+  .friend-list li, .request-list li {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .video-grid {
+    max-height: 180px;
+    padding: 8px;
+  }
+  .video-tile {
+    width: 160px;
+  }
+  .chat-panel {
+    padding: 0 4px;
+  }
+  .messages {
+    padding: 10px 8px;
+  }
+  .bubble {
+    font-size: 13px;
+    padding: 6px 10px;
+    max-width: 85%;
+  }
+  #chat-form {
+    padding: 6px 8px;
+  }
+  #chat-input {
+    font-size: 14px;
+    padding: 8px 12px;
+  }
+  .overlay-card {
+    padding: 16px;
+    max-width: 95%;
+  }
+  .avatar-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
