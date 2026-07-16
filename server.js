@@ -1,6 +1,5 @@
 // FriendTalk server v2
 // Adds: user accounts, friend requests/list, plus existing room chat + WebRTC signaling.
-// NEW: room codes, stricter passwords, admin can see user data.
 
 const path = require('path');
 const crypto = require('crypto');
@@ -16,10 +15,11 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: '*' },
-  maxHttpBufferSize: 10 * 1024 * 1024
+  maxHttpBufferSize: 10 * 1024 * 1024 // allow attachments up to ~10MB (base64-encoded, includes overhead)
 });
 
-app.use(helmet({ contentSecurityPolicy: false }));
+// Basic hardening: security headers + rate limiting on the sensitive auth endpoints.
+app.use(helmet({ contentSecurityPolicy: false })); // CSP off since we load Google Fonts + inline event handlers
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
@@ -90,19 +90,6 @@ async function initDb() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, created_at);
   `);
-
-  // NEW: таблица комнат с кодами
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS rooms (
-      id SERIAL PRIMARY KEY,
-      code TEXT UNIQUE NOT NULL,
-      name TEXT NOT NULL,
-      created_by INTEGER REFERENCES users(id) ON DELETE CASCADE,
-      created_at TIMESTAMPTZ DEFAULT now()
-    );
-  `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_rooms_code ON rooms(code);`);
-
   console.log('База данных готова.');
 }
 initDb().catch(err => console.error('Ошибка инициализации БД:', err));
@@ -115,6 +102,7 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// Ensures every new user is automatically friends with the reserved "support" account, if it exists.
 async function autoFriendSupport(newUserId) {
   try {
     const supportResult = await pool.query('SELECT id FROM users WHERE username = $1', [SUPPORT_USERNAME]);
@@ -169,13 +157,9 @@ app.post('/api/register', authLimiter, async (req, res) => {
     password = String(password || '');
 
     if (username.length < 3) return res.status(400).json({ error: 'Имя пользователя должно быть не короче 3 символов' });
-    // NEW: усиленная проверка пароля
     if (password.length < 8) return res.status(400).json({ error: 'Пароль должен быть не короче 8 символов' });
-    if (!/[a-z]/.test(password)) return res.status(400).json({ error: 'Пароль должен содержать строчную букву' });
-    if (!/[A-Z]/.test(password)) return res.status(400).json({ error: 'Пароль должен содержать заглавную букву' });
-    if (!/[0-9]/.test(password)) return res.status(400).json({ error: 'Пароль должен содержать цифру' });
-    if (!/[!@#$%^&*()_+\-=\[\]{};:'",.<>?\/|\\]/.test(password)) {
-      return res.status(400).json({ error: 'Пароль должен содержать специальный символ' });
+    if (!/[a-zA-Zа-яА-Я]/.test(password) || !/[0-9]/.test(password)) {
+      return res.status(400).json({ error: 'Пароль должен содержать и буквы, и цифры' });
     }
 
     const existing = await pool.query('SELECT id FROM users WHERE username = $1', [username]);
@@ -292,6 +276,7 @@ app.post('/api/friends/request', requireAuth, async (req, res) => {
     const toUser = targetResult.rows[0].id;
     if (toUser === req.userId) return res.status(400).json({ error: 'Нельзя добавить самого себя' });
 
+    // if the other person already sent us a request, auto-accept instead of duplicating
     const reverse = await pool.query(
       `SELECT id, status FROM friend_requests WHERE from_user = $1 AND to_user = $2`,
       [toUser, req.userId]
@@ -344,54 +329,6 @@ app.get('/api/support', requireAuth, async (req, res) => {
   }
 });
 
-// ---------- NEW: комнаты с кодами ----------
-function generateRoomCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return code;
-}
-
-app.post('/api/room/create', requireAuth, async (req, res) => {
-  try {
-    let name = String(req.body.name || '').trim().slice(0, 64);
-    if (!name) return res.status(400).json({ error: 'Введите название комнаты' });
-    let code;
-    let unique = false;
-    let attempts = 0;
-    while (!unique && attempts < 10) {
-      code = generateRoomCode();
-      const check = await pool.query('SELECT id FROM rooms WHERE code = $1', [code]);
-      if (check.rows.length === 0) unique = true;
-      attempts++;
-    }
-    if (!unique) return res.status(500).json({ error: 'Не удалось сгенерировать код, попробуйте позже' });
-    const result = await pool.query(
-      'INSERT INTO rooms (code, name, created_by) VALUES ($1, $2, $3) RETURNING id, code',
-      [code, name, req.userId]
-    );
-    res.json({ roomId: result.rows[0].id, code: result.rows[0].code });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Не удалось создать комнату' });
-  }
-});
-
-app.get('/api/room/by-code', requireAuth, async (req, res) => {
-  try {
-    const code = String(req.query.code || '').trim().toUpperCase();
-    if (!code || code.length !== 6) return res.status(400).json({ error: 'Неверный код' });
-    const result = await pool.query('SELECT id, name FROM rooms WHERE code = $1', [code]);
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Комната не найдена' });
-    res.json({ roomId: `group-${result.rows[0].id}`, name: result.rows[0].name });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Ошибка поиска комнаты' });
-  }
-});
-
 // ---------- Admin: full moderation control over accounts ----------
 app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -423,6 +360,7 @@ app.delete('/api/admin/users/:userId', requireAuth, requireAdmin, async (req, re
     const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING username', [targetId]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Пользователь не найден' });
 
+    // Force any active session of the deleted user to log out immediately.
     io.to('user-' + targetId).emit('force-logout');
     onlineUsers.delete(targetId);
 
@@ -433,23 +371,21 @@ app.delete('/api/admin/users/:userId', requireAuth, requireAdmin, async (req, re
   }
 });
 
+// Passwords are one-way hashed and can never be viewed by anyone, including admins —
+// this lets an admin help someone who's locked out by setting a new password instead.
 app.post('/api/admin/users/:userId/reset-password', requireAuth, requireAdmin, async (req, res) => {
   try {
     const targetId = parseInt(req.params.userId, 10);
     const newPassword = String((req.body || {}).newPassword || '');
     if (!targetId) return res.status(400).json({ error: 'Некорректный id' });
-    // NEW: усиленная проверка пароля
-    if (newPassword.length < 8) return res.status(400).json({ error: 'Пароль должен быть не короче 8 символов' });
-    if (!/[a-z]/.test(newPassword)) return res.status(400).json({ error: 'Пароль должен содержать строчную букву' });
-    if (!/[A-Z]/.test(newPassword)) return res.status(400).json({ error: 'Пароль должен содержать заглавную букву' });
-    if (!/[0-9]/.test(newPassword)) return res.status(400).json({ error: 'Пароль должен содержать цифру' });
-    if (!/[!@#$%^&*()_+\-=\[\]{};:'",.<>?\/|\\]/.test(newPassword)) {
-      return res.status(400).json({ error: 'Пароль должен содержать специальный символ' });
+    if (newPassword.length < 8 || !/[a-zA-Zа-яА-Я]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      return res.status(400).json({ error: 'Пароль должен быть от 8 символов и содержать буквы и цифры' });
     }
     const hash = await bcrypt.hash(newPassword, 10);
     const result = await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2 RETURNING username', [hash, targetId]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Пользователь не найден' });
 
+    // Invalidate existing sessions so the old password (and any stolen token) stops working.
     await pool.query('DELETE FROM sessions WHERE user_id = $1', [targetId]);
     io.to('user-' + targetId).emit('force-logout');
 
@@ -555,6 +491,8 @@ app.get('/api/messages', requireAuth, async (req, res) => {
   }
 });
 
+// "Избранное" is just a personal chat room (self-<userId>) that only the owner can write
+// to and read — messages starred elsewhere get copied here without needing to switch rooms.
 app.post('/api/forward-to-self', requireAuth, async (req, res) => {
   try {
     const { username, text, attachment } = req.body || {};
@@ -580,7 +518,9 @@ app.post('/api/forward-to-self', requireAuth, async (req, res) => {
 });
 
 // ---------- Rooms: text chat + WebRTC signaling ----------
+// roomId -> Map<socketId, {username, userId}>
 const rooms = new Map();
+// userId -> count of currently connected sockets (for online/offline presence)
 const onlineUsers = new Map();
 
 function getRoomUsers(roomId) {
@@ -595,6 +535,7 @@ function isUserInRoom(roomId, userId) {
   return Array.from(room.values()).some(v => v.userId === userId);
 }
 
+// For dm-<a>-<b> rooms, returns the "other" participant's user id.
 function otherDmParticipant(roomId, myUserId) {
   if (!roomId.startsWith('dm-')) return null;
   const parts = roomId.slice(3).split('-');
@@ -658,6 +599,8 @@ io.on('connection', (socket) => {
   socket.authedUserId = null;
   socket.authedUsername = null;
 
+  // Persistent per-user channel, used to push call/message notifications
+  // even while the person isn't actively inside that room.
   socket.on('authenticate', async ({ token }) => {
     try {
       const session = await sessionFromToken(token);
@@ -705,6 +648,7 @@ io.on('connection', (socket) => {
       time: Date.now()
     });
 
+    // Ring the other person for a call (only relevant for 1:1 "dm-" rooms).
     if (intent === 'call' && userId) {
       const otherId = otherDmParticipant(roomId, userId);
       if (otherId && !isUserInRoom(roomId, otherId)) {
@@ -744,6 +688,7 @@ io.on('connection', (socket) => {
     io.to(currentRoom).emit('chat-message', payload);
     if (ack) ack({ ok: true, id: messageId });
 
+    // Notify the other DM participant if they're not currently viewing this room.
     if (socket.authedUserId) {
       const otherId = otherDmParticipant(currentRoom, socket.authedUserId);
       if (otherId && !isUserInRoom(currentRoom, otherId)) {
@@ -807,6 +752,7 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Deletes a message "for everyone" — only the original author may delete it.
   socket.on('delete-message', async ({ id }) => {
     if (!currentRoom || !socket.authedUserId || !id) return;
     try {
