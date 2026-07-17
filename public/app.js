@@ -1,5 +1,4 @@
 // FriendTalk client v2 — accounts, friends, rooms with voice/video
-// NEW: room codes, photo viewer, flip camera, nickname change, password toggle, stricter password validation.
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -23,6 +22,7 @@ const ICE_SERVERS = [
 
 const API_BASE = location.origin;
 
+// Registering the service worker is what makes the browser offer "Install app".
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/service-worker.js').catch(() => { /* not critical */ });
@@ -68,6 +68,11 @@ const friendsList = document.getElementById('friends-list');
 const noFriendsMsg = document.getElementById('no-friends-msg');
 const groupRoomForm = document.getElementById('group-room-form');
 const groupRoomInput = document.getElementById('group-room-input');
+const createRoomBtn = document.getElementById('create-room-btn');
+const createdRoomMsg = document.getElementById('created-room-msg');
+const nicknameInput = document.getElementById('nickname-input');
+const nicknameSaveBtn = document.getElementById('nickname-save-btn');
+const nicknameMsg = document.getElementById('nickname-msg');
 
 // ---------- Call banner ----------
 const callBanner = document.getElementById('call-banner');
@@ -78,6 +83,7 @@ const callDeclineBtn = document.getElementById('call-decline-btn');
 // ---------- Chat elements ----------
 const roomNameLabel = document.getElementById('room-name-label');
 const callTimerEl = document.getElementById('call-timer');
+const copyCodeBtn = document.getElementById('copy-code-btn');
 const videoGrid = document.getElementById('video-grid');
 const peopleUl = document.getElementById('people-ul');
 const messagesEl = document.getElementById('messages');
@@ -85,31 +91,20 @@ const chatForm = document.getElementById('chat-form');
 const chatInput = document.getElementById('chat-input');
 const toggleMicBtn = document.getElementById('toggle-mic');
 const toggleCamBtn = document.getElementById('toggle-cam');
+const flipCamBtn = document.getElementById('flip-cam');
 const toggleScreenBtn = document.getElementById('toggle-screen');
 const attachBtn = document.getElementById('attach-btn');
 const fileInput = document.getElementById('file-input');
 const voiceBtn = document.getElementById('voice-btn');
 const leaveBtn = document.getElementById('leave-btn');
-// NEW: flip camera button
-const flipCamBtn = document.getElementById('flip-cam');
-
-// NEW: photo viewer elements (the lightbox overlay in index.html)
-const photoViewer = document.getElementById('lightbox');
-const photoViewerImg = document.getElementById('lightbox-img');
-const photoViewerClose = document.getElementById('lightbox-close');
-
-// NEW: room code elements
-const createRoomBtn = document.getElementById('create-room-btn');
-const createdRoomMsg = document.getElementById('created-room-msg');
-const copyCodeBtn = document.getElementById('copy-code-btn');
-
-// NEW: nickname input
-const nicknameInput = document.getElementById('nickname-input');
-const saveNicknameBtn = document.getElementById('nickname-save-btn');
+const lightbox = document.getElementById('lightbox');
+const lightboxImg = document.getElementById('lightbox-img');
+const lightboxClose = document.getElementById('lightbox-close');
 
 let authToken = null;
 let myUserId = null;
 let myUsername = '';
+let myNickname = null;
 let myAvatar = 1;
 let isAdmin = false;
 
@@ -118,15 +113,13 @@ let localStream = null;
 let micOn = true;
 let camOn = false;
 let myRoom = '';
-let activeRoomId = null;
+let activeRoomId = null; // room currently open in the chat screen, or null when on friends screen
 const peers = new Map();
-const unreadCounts = new Map();
-let friendsCache = [];
-
-// NEW: camera facing mode
-let facingMode = 'user';
+const unreadCounts = new Map(); // friendId -> count
+let friendsCache = []; // last loaded friends list, used to resolve notifications to names
 
 // ---------- Avatars ----------
+// 15 hand-picked options: a friendly emoji over a soft gradient, no external images needed.
 const AVATARS = [
   { emoji: '🐱', from: '#ff9a56', to: '#ff6b6b' },
   { emoji: '🐶', from: '#4facfe', to: '#00f2fe' },
@@ -255,11 +248,10 @@ async function verifySession() {
     const me = await apiRequest('/api/me');
     myUserId = me.id;
     myUsername = me.username;
+    myNickname = me.nickname || null;
     myAvatar = me.avatar || 1;
     isAdmin = !!me.isAdmin;
     adminBtn.classList.toggle('hidden', !isAdmin);
-    // NEW: загрузить ник в поле
-    if (nicknameInput) nicknameInput.value = me.nickname || me.username;
     connectPersistentSocket();
     enterFriendsScreen();
   } catch (e) {
@@ -269,6 +261,12 @@ async function verifySession() {
   }
 }
 
+function myDisplayName() {
+  return myNickname || myUsername;
+}
+
+// A single socket connection lives for the whole session (from login until logout),
+// so we can receive call/message notifications even while just browsing the friends screen.
 function connectPersistentSocket() {
   if (socket) return;
   socket = io(API_BASE, { transports: ['websocket', 'polling'] });
@@ -283,7 +281,7 @@ function connectPersistentSocket() {
   });
 
   socket.on('notify-message', ({ roomId, fromUsername, preview }) => {
-    if (activeRoomId === roomId) return;
+    if (activeRoomId === roomId) return; // already looking at this conversation
     const friendId = friendIdFromRoom(roomId);
     if (friendId != null) {
       unreadCounts.set(friendId, (unreadCounts.get(friendId) || 0) + 1);
@@ -348,6 +346,17 @@ callDeclineBtn.addEventListener('click', () => {
   pendingCallRoomId = null;
 });
 
+// ---------- Password show/hide ----------
+document.querySelectorAll('.pw-toggle').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const target = document.getElementById(btn.dataset.target);
+    if (!target) return;
+    const showing = target.type === 'text';
+    target.type = showing ? 'password' : 'text';
+    btn.textContent = showing ? '👁️' : '🙈';
+  });
+});
+
 // ---------- Auth tabs ----------
 tabBtns.forEach(btn => {
   btn.addEventListener('click', () => {
@@ -359,29 +368,6 @@ tabBtns.forEach(btn => {
     authError.textContent = '';
   });
 });
-
-// NEW: password toggle eyes (buttons are matched via class + data-target, not individual IDs)
-document.querySelectorAll('.pw-toggle').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const input = document.getElementById(btn.dataset.target);
-    if (!input) return;
-    const showing = input.type === 'text';
-    input.type = showing ? 'password' : 'text';
-    btn.textContent = showing ? '👁️' : '🙈';
-    btn.title = showing ? 'Показать пароль' : 'Скрыть пароль';
-  });
-});
-
-// NEW: client-side password validation
-function validatePassword(pw) {
-  const errors = [];
-  if (pw.length < 8) errors.push('минимум 8 символов');
-  if (!/[a-z]/.test(pw)) errors.push('строчная буква');
-  if (!/[A-Z]/.test(pw)) errors.push('заглавная буква');
-  if (!/[0-9]/.test(pw)) errors.push('цифра');
-  if (!/[!@#$%^&*()_+\-=\[\]{};:'",.<>?\/|\\]/.test(pw)) errors.push('специальный символ');
-  return errors;
-}
 
 loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -401,14 +387,6 @@ registerForm.addEventListener('submit', async (e) => {
   authError.textContent = '';
   const username = document.getElementById('register-username').value.trim();
   const password = document.getElementById('register-password').value;
-
-  // NEW: validate password on client
-  const errors = validatePassword(password);
-  if (errors.length > 0) {
-    authError.textContent = 'Пароль должен содержать: ' + errors.join(', ');
-    return;
-  }
-
   try {
     const data = await apiRequest('/api/register', { method: 'POST', body: { username, password } });
     onAuthSuccess(data);
@@ -440,7 +418,7 @@ logoutBtn.addEventListener('click', () => {
 
 // ---------- Friends screen ----------
 function enterFriendsScreen() {
-  myUsernameLabel.textContent = myUsername;
+  myUsernameLabel.textContent = myDisplayName();
   myAvatarSlot.innerHTML = '';
   myAvatarSlot.appendChild(avatarCircleEl(myAvatar, 'small'));
   showScreen(friendsScreen);
@@ -449,6 +427,8 @@ function enterFriendsScreen() {
 
 profileBtn.addEventListener('click', () => {
   renderAvatarGrid();
+  nicknameInput.value = myNickname || myUsername;
+  nicknameMsg.textContent = '';
   avatarPicker.classList.remove('hidden');
 });
 
@@ -456,20 +436,19 @@ avatarPickerClose.addEventListener('click', () => {
   avatarPicker.classList.add('hidden');
 });
 
-// NEW: save nickname
-saveNicknameBtn.addEventListener('click', async () => {
-  const nick = nicknameInput.value.trim();
-  if (nick.length < 2 || nick.length > 24) {
-    alert('Ник должен быть от 2 до 24 символов.');
+nicknameSaveBtn.addEventListener('click', async () => {
+  const value = nicknameInput.value.trim();
+  if (value.length < 2 || value.length > 24) {
+    nicknameMsg.textContent = 'Ник должен быть от 2 до 24 символов.';
     return;
   }
   try {
-    await apiRequest('/api/me/nickname', { method: 'PATCH', body: { nickname: nick } });
-    myUsername = nick;
-    myUsernameLabel.textContent = myUsername;
-    alert('Ник обновлён!');
+    await apiRequest('/api/me/nickname', { method: 'PATCH', body: { nickname: value } });
+    myNickname = value;
+    myUsernameLabel.textContent = myDisplayName();
+    nicknameMsg.textContent = 'Сохранено!';
   } catch (e) {
-    alert(e.message);
+    nicknameMsg.textContent = e.message;
   }
 });
 
@@ -520,17 +499,25 @@ function renderAdminUsers(users) {
   users.forEach(u => {
     const row = document.createElement('div');
     row.className = 'admin-user-row';
+    row.style.flexDirection = 'column';
+    row.style.alignItems = 'stretch';
     const status = u.online ? 'в сети' : (u.lastSeen ? formatLastSeen(u.lastSeen) : 'не в сети');
-    // NEW: show nickname and dates
-    row.innerHTML = `
-      <span>${escapeHtml(u.username)}${u.nickname ? ' (' + escapeHtml(u.nickname) + ')' : ''} <span class="friend-status">${status}</span></span>
-      <button class="pill-btn decline" data-id="${u.id}">Удалить</button>`;
-    const delBtn = row.querySelector('button');
+    const nickPart = u.nickname ? ` — ник: ${escapeHtml(u.nickname)}` : '';
+    const topLine = document.createElement('div');
+    topLine.style.display = 'flex';
+    topLine.style.justifyContent = 'space-between';
+    topLine.style.alignItems = 'center';
+    topLine.innerHTML = `
+      <span>${escapeHtml(u.username)}${u.username === myUsername ? ' (вы)' : ''}${nickPart} <span class="friend-status">${status}</span></span>
+      <button class="pill-btn decline" data-action="delete">Удалить</button>`;
+    row.appendChild(topLine);
+
+    const deleteBtn = topLine.querySelector('[data-action="delete"]');
     if (u.username === myUsername) {
-      delBtn.disabled = true;
-      delBtn.style.opacity = 0.4;
+      deleteBtn.disabled = true;
+      deleteBtn.style.opacity = 0.4;
     } else {
-      delBtn.addEventListener('click', async () => {
+      deleteBtn.addEventListener('click', async () => {
         if (!confirm(`Полностью удалить пользователя ${u.username}? Это действие необратимо.`)) return;
         try {
           await apiRequest('/api/admin/users/' + u.id, { method: 'DELETE' });
@@ -539,7 +526,26 @@ function renderAdminUsers(users) {
           alert(e.message);
         }
       });
+
+      const resetRow = document.createElement('div');
+      resetRow.className = 'admin-reset-row';
+      resetRow.innerHTML = `
+        <input type="text" placeholder="Новый пароль (мин. 8, буквы+цифры)" />
+        <button class="pill-btn message">Сбросить пароль</button>`;
+      const resetInput = resetRow.querySelector('input');
+      resetRow.querySelector('button').addEventListener('click', async () => {
+        const newPassword = resetInput.value;
+        try {
+          await apiRequest(`/api/admin/users/${u.id}/reset-password`, { method: 'POST', body: { newPassword } });
+          alert(`Новый пароль для ${u.username} установлен. Сообщите его пользователю.`);
+          resetInput.value = '';
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+      row.appendChild(resetRow);
     }
+
     adminUserList.appendChild(row);
   });
 }
@@ -571,6 +577,9 @@ async function forwardToSelf(msg) {
         attachment: msg.attachment || null
       }
     });
+    if (activeRoomId === 'self-' + myUserId) {
+      // already looking at "Избранное" — nothing else to refresh, the copy lives only in history
+    }
   } catch (e) {
     console.error(e);
   }
@@ -591,6 +600,7 @@ function renderFriendsFromCache() {
 }
 
 function renderFriends({ friends, incoming, outgoing }) {
+  // Incoming requests
   incomingBlock.classList.toggle('hidden', incoming.length === 0);
   incomingList.innerHTML = '';
   incoming.forEach(r => {
@@ -606,6 +616,7 @@ function renderFriends({ friends, incoming, outgoing }) {
     incomingList.appendChild(li);
   });
 
+  // Outgoing requests
   outgoingBlock.classList.toggle('hidden', outgoing.length === 0);
   outgoingList.innerHTML = '';
   outgoing.forEach(r => {
@@ -717,60 +728,39 @@ function startFriendChat(friendId, friendUsername) {
   joinRoom(friendRoomId(friendId), `Переписка с ${friendUsername}`, { textOnly: true });
 }
 
-// NEW: комнаты со сложным кодом (генерируется на клиенте, без обращений к серверу —
-// сам код и есть идентификатор socket.io-комнаты, поэтому ничего не может "не найтись").
-let currentGroupCode = null;
-
-// Символы без похожих друг на друга (без 0/O, 1/I/L) — как код лобби в Among Us.
-const ROOM_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-
-function generateRoomCode(length = 6) {
+function generateRoomCode() {
+  // Excludes visually-confusing characters (0/O, 1/I).
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
-  if (window.crypto && crypto.getRandomValues) {
-    const arr = new Uint32Array(length);
-    crypto.getRandomValues(arr);
-    for (let i = 0; i < length; i++) code += ROOM_CODE_CHARS[arr[i] % ROOM_CODE_CHARS.length];
-  } else {
-    for (let i = 0; i < length; i++) code += ROOM_CODE_CHARS[Math.floor(Math.random() * ROOM_CODE_CHARS.length)];
-  }
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
   return code;
 }
 
-if (createRoomBtn) {
-  createRoomBtn.addEventListener('click', () => {
-    const code = generateRoomCode();
-    currentGroupCode = code;
-    if (createdRoomMsg) {
-      createdRoomMsg.innerHTML = `Код комнаты: <strong>${code}</strong> — отправьте его друзьям, чтобы они присоединились.`;
-    }
-    joinRoom('group-' + code, 'Комната ' + code, { textOnly: false });
-  });
-}
+createRoomBtn.addEventListener('click', () => {
+  const code = generateRoomCode();
+  createdRoomMsg.textContent = `Код комнаты: ${code} — отправьте его друзьям.`;
+  joinRoom('group-' + code, `Комната ${code}`, { textOnly: false, code });
+});
 
 groupRoomForm.addEventListener('submit', (e) => {
   e.preventDefault();
-  const code = groupRoomInput.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const code = groupRoomInput.value.trim().toUpperCase();
   if (!code) return;
-  groupRoomInput.value = '';
-  currentGroupCode = code;
-  joinRoom('group-' + code, 'Комната ' + code, { textOnly: false });
+  joinRoom('group-' + code, `Комната ${code}`, { textOnly: false, code });
 });
 
-if (copyCodeBtn) {
-  copyCodeBtn.addEventListener('click', async () => {
-    if (!currentGroupCode) return;
-    try {
-      await navigator.clipboard.writeText(currentGroupCode);
-      copyCodeBtn.textContent = '✅';
-      setTimeout(() => { copyCodeBtn.textContent = '📋'; }, 1200);
-    } catch (e) {
-      prompt('Скопируйте код комнаты:', currentGroupCode);
-    }
-  });
-}
+copyCodeBtn.addEventListener('click', () => {
+  if (!currentRoomCode) return;
+  navigator.clipboard.writeText(currentRoomCode).then(() => {
+    copyCodeBtn.title = 'Скопировано!';
+    setTimeout(() => { copyCodeBtn.title = 'Скопировать код комнаты'; }, 1500);
+  }).catch(() => {});
+});
 
 // ---------- Room / chat / WebRTC ----------
-async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
+let currentRoomCode = null;
+
+async function joinRoom(roomId, displayLabel, { textOnly = false, code = null } = {}) {
   myRoom = roomId;
   activeRoomId = roomId;
 
@@ -796,8 +786,9 @@ async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
   messagesEl.innerHTML = '';
   peers.clear();
   roomNameLabel.textContent = displayLabel;
+  currentRoomCode = code;
+  copyCodeBtn.classList.toggle('hidden', !code);
   chatScreen.classList.toggle('text-only', textOnly);
-  if (copyCodeBtn) copyCodeBtn.classList.toggle('hidden', !roomId.startsWith('group-'));
   showScreen(chatScreen);
   if (!textOnly) {
     addLocalVideoTile();
@@ -806,6 +797,7 @@ async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
     stopCallTimer();
   }
 
+  // Load persisted history for this room before live messages start arriving.
   try {
     const history = await apiRequest('/api/messages?roomId=' + encodeURIComponent(roomId));
     history.messages.forEach(addMessage);
@@ -813,7 +805,7 @@ async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
     console.error('Не удалось загрузить историю сообщений', e);
   }
 
-  socket.emit('join-room', { roomId, token: authToken, username: myUsername, intent: textOnly ? 'text' : 'call' });
+  socket.emit('join-room', { roomId, token: authToken, username: myDisplayName(), intent: textOnly ? 'text' : 'call' });
 }
 
 let callTimerInterval = null;
@@ -848,6 +840,8 @@ function stopCallTimer() {
 function leaveCurrentRoom() {
   if (socket) socket.emit('leave-room');
   activeRoomId = null;
+  currentRoomCode = null;
+  copyCodeBtn.classList.add('hidden');
   if (localStream) {
     localStream.getTracks().forEach(t => t.stop());
     localStream = null;
@@ -924,7 +918,7 @@ function createPeerConnection(peerId, username, isInitiator, avatar) {
   };
 
   function attemptReconnect() {
-    try { pc.restartIce(); } catch (e) { /* older browsers */ }
+    try { pc.restartIce(); } catch (e) { /* older browsers: fall back to renegotiation below */ }
     if (isInitiator) {
       pc.createOffer({ iceRestart: true })
         .then(offer => pc.setLocalDescription(offer))
@@ -933,6 +927,10 @@ function createPeerConnection(peerId, username, isInitiator, avatar) {
     }
   }
 
+  // Free STUN/TURN relays sometimes cause a brief "disconnected" blip rather than an
+  // outright "failed" state — waiting a few seconds before restarting avoids fighting
+  // a connection that's about to recover on its own, while still catching real drops
+  // (this is the fix for calls that quietly go silent after a few minutes).
   pc.oniceconnectionstatechange = () => {
     const state = pc.iceConnectionState;
     if (peerEntry.reconnectTimer) {
@@ -961,9 +959,9 @@ function createPeerConnection(peerId, username, isInitiator, avatar) {
   }
 }
 
-// ---------- Speaking indicator ----------
+// ---------- Speaking indicator (highlights whoever is currently talking) ----------
 let audioCtx = null;
-const speakingDetectors = new Map();
+const speakingDetectors = new Map(); // key (tile id) -> { interval, source }
 
 function attachSpeakingDetector(stream, tileId) {
   if (speakingDetectors.has(tileId)) return;
@@ -998,6 +996,7 @@ function detachSpeakingDetector(tileId) {
   try { entry.source.disconnect(); } catch (e) { /* ignore */ }
   speakingDetectors.delete(tileId);
 }
+
 function removePeer(peerId) {
   const entry = peers.get(peerId);
   if (entry) {
@@ -1016,7 +1015,7 @@ function addLocalVideoTile() {
   tile.id = 'tile-local';
   tile.innerHTML = `
     <video autoplay muted playsinline></video>
-    <div class="name-tag"><span>${escapeHtml(myUsername)} (вы)</span></div>
+    <div class="name-tag"><span>${escapeHtml(myDisplayName())} (вы)</span></div>
   `;
   const video = tile.querySelector('video');
   video.srcObject = localStream;
@@ -1044,40 +1043,6 @@ function refreshLocalTileMode() {
   }
 }
 
-// NEW: flip camera
-flipCamBtn.addEventListener('click', async () => {
-  if (!localStream) return;
-  const videoTrack = localStream.getVideoTracks()[0];
-  if (!videoTrack) {
-    alert('Камера не активна.');
-    return;
-  }
-  facingMode = (facingMode === 'user') ? 'environment' : 'user';
-  try {
-    const newStream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: { facingMode: facingMode }
-    });
-    const newVideoTrack = newStream.getVideoTracks()[0];
-    const newAudioTrack = newStream.getAudioTracks()[0];
-    localStream.removeTrack(videoTrack);
-    localStream.addTrack(newVideoTrack);
-    if (newAudioTrack) {
-      const oldAudio = localStream.getAudioTracks()[0];
-      if (oldAudio) localStream.removeTrack(oldAudio);
-      localStream.addTrack(newAudioTrack);
-    }
-    peers.forEach(({ pc }) => {
-      const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
-      if (sender) sender.replaceTrack(newVideoTrack);
-    });
-    refreshLocalTileMode();
-  } catch (e) {
-    alert('Не удалось переключить камеру: ' + e.message);
-    facingMode = (facingMode === 'user') ? 'environment' : 'user';
-  }
-});
-
 function addRemoteVideoTile(peerId, username, stream, avatar) {
   let tile = document.getElementById('tile-' + peerId);
   if (!tile) {
@@ -1093,6 +1058,8 @@ function addRemoteVideoTile(peerId, username, stream, avatar) {
   const video = tile.querySelector('video');
   video.srcObject = stream;
 
+  // Note: on the receiving end, track.enabled is a local-only flag and does not
+  // reflect whether the sender is actually providing video — track.muted does.
   const hasVideoTrack = stream.getVideoTracks().some(t => !t.muted);
   video.style.display = hasVideoTrack ? '' : 'none';
   updateRemoteNoVideoAvatar(tile, !hasVideoTrack, avatar);
@@ -1121,7 +1088,7 @@ function updateRemoteNoVideoAvatar(tile, show, avatar) {
 
 function updatePeopleList(users, replaceAll) {
   if (replaceAll) peopleUl.innerHTML = '';
-  addPersonToList({ id: 'me', username: myUsername + ' (вы)', avatar: myAvatar });
+  addPersonToList({ id: 'me', username: myDisplayName() + ' (вы)', avatar: myAvatar });
   users.forEach(addPersonToList);
 }
 function addPersonToList(u) {
@@ -1144,6 +1111,22 @@ chatForm.addEventListener('submit', (e) => {
   chatInput.value = '';
 });
 
+// ---------- Image lightbox ----------
+function openLightbox(dataUrl) {
+  lightboxImg.src = dataUrl;
+  lightbox.classList.remove('hidden');
+}
+lightboxClose.addEventListener('click', () => {
+  lightbox.classList.add('hidden');
+  lightboxImg.src = '';
+});
+lightbox.addEventListener('click', (e) => {
+  if (e.target === lightbox) {
+    lightbox.classList.add('hidden');
+    lightboxImg.src = '';
+  }
+});
+
 function renderAttachment(attachment) {
   const wrap = document.createElement('div');
   wrap.className = 'msg-attachment';
@@ -1152,12 +1135,7 @@ function renderAttachment(attachment) {
     const img = document.createElement('img');
     img.src = attachment.dataUrl;
     img.alt = attachment.filename || 'изображение';
-    img.style.cursor = 'pointer';
-    // NEW: open photo in viewer
-    img.addEventListener('click', () => {
-      photoViewerImg.src = attachment.dataUrl;
-      photoViewer.classList.remove('hidden');
-    });
+    img.addEventListener('click', () => openLightbox(attachment.dataUrl));
     wrap.appendChild(img);
   } else if (type.startsWith('video/')) {
     const video = document.createElement('video');
@@ -1179,12 +1157,6 @@ function renderAttachment(attachment) {
   }
   return wrap;
 }
-
-// NEW: photo viewer close
-photoViewerClose.addEventListener('click', () => photoViewer.classList.add('hidden'));
-photoViewer.addEventListener('click', (e) => {
-  if (e.target === photoViewer) photoViewer.classList.add('hidden');
-});
 
 function addMessage(msg) {
   if (msg.system) {
@@ -1271,6 +1243,36 @@ toggleCamBtn.addEventListener('click', () => {
   refreshLocalTileMode();
 });
 
+// ---------- Flip camera (front/back, mainly for phones) ----------
+let facingMode = 'user';
+
+flipCamBtn.addEventListener('click', async () => {
+  if (!camOn) {
+    // Camera is off — just remember the preference for next time it's turned on.
+    facingMode = facingMode === 'user' ? 'environment' : 'user';
+    return;
+  }
+  const nextFacing = facingMode === 'user' ? 'environment' : 'user';
+  try {
+    const newStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: nextFacing } });
+    const newTrack = newStream.getVideoTracks()[0];
+    const oldTrack = localStream.getVideoTracks()[0];
+
+    peers.forEach(({ pc }) => {
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+      if (sender) sender.replaceTrack(newTrack);
+    });
+
+    if (oldTrack) { localStream.removeTrack(oldTrack); oldTrack.stop(); }
+    localStream.addTrack(newTrack);
+    newTrack.enabled = true;
+    facingMode = nextFacing;
+    refreshLocalTileMode();
+  } catch (e) {
+    alert('Не удалось переключить камеру — возможно, на этом устройстве только одна камера.');
+  }
+});
+
 // ---------- Screen sharing ----------
 let screenStream = null;
 let cameraVideoTrack = null;
@@ -1283,7 +1285,7 @@ toggleScreenBtn.addEventListener('click', async () => {
   try {
     screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
   } catch (e) {
-    return;
+    return; // user cancelled the picker
   }
 
   const screenTrack = screenStream.getVideoTracks()[0];
@@ -1331,7 +1333,7 @@ function stopScreenShare() {
 }
 
 // ---------- File / photo / video attachments ----------
-const MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024; // 6MB after any compression
 
 attachBtn.addEventListener('click', () => fileInput.click());
 
@@ -1343,6 +1345,8 @@ fileInput.addEventListener('change', async () => {
   sendFileAttachment(toSend);
 });
 
+// Phone-camera photos are often 8-15MB — shrinking them client-side means "send photo"
+// actually succeeds instead of silently hitting the size limit.
 function compressImage(file) {
   return new Promise((resolve) => {
     const img = new Image();
@@ -1366,7 +1370,7 @@ function compressImage(file) {
         resolve(new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }));
       }, 'image/jpeg', 0.82);
     };
-    img.onerror = () => resolve(file);
+    img.onerror = () => resolve(file); // not a decodable image — send as-is
     img.src = objectUrl;
   });
 }
@@ -1390,6 +1394,8 @@ function sendFileAttachment(file, attempt = 1) {
         }
       }
     });
+    // Fallback in case the server doesn't answer (older deploy, dropped ack) —
+    // don't leave the user thinking it silently failed nor spam duplicates.
     setTimeout(() => {
       if (!settled && attempt < 2) sendFileAttachment(file, attempt + 1);
     }, 6000);
@@ -1410,7 +1416,7 @@ function pickVoiceMimeType() {
       return type;
     }
   }
-  return '';
+  return ''; // let the browser pick its own default
 }
 
 voiceBtn.addEventListener('click', async () => {
