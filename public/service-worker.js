@@ -1,7 +1,14 @@
-// Minimal service worker: caches the static app shell so the site is installable
-// and opens instantly even on a flaky connection. Chat data itself always comes
-// fresh from the server (never cached) since it needs to be live.
-const CACHE_NAME = 'karasik21-shell-v1';
+// Service worker: caches the static app shell so the site is installable
+// and still opens on a flaky/offline connection.
+//
+// IMPORTANT: uses a NETWORK-FIRST strategy for the shell files now.
+// Previously this was cache-first, which meant that once a phone/browser had
+// this app installed, it would keep serving the OLD app.js/style.css forever,
+// even after you deployed new versions to the server — that's why updates
+// "didn't show up" or seemed to randomly revert. Network-first fixes that:
+// every load tries the real server first and only falls back to the cached
+// copy if there's no connection.
+const CACHE_NAME = 'karasik21-shell-v2';
 const SHELL_FILES = [
   '/',
   '/index.html',
@@ -33,6 +40,12 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    fetch(event.request)
+      .then((networkResponse) => {
+        const copy = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        return networkResponse;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
