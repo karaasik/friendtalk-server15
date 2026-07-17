@@ -624,9 +624,12 @@ html[data-theme="dark"] .topbar { background: rgba(28,28,30,0.72); }
   .topbar { padding: 10px 12px; flex-wrap: nowrap; }
   .room-info { font-size: 13px; gap: 6px; min-width: 0; overflow: hidden; }
   .room-info span#room-name-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 34vw; }
-  .controls { gap: 4px; }
+  #my-username-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 30vw; display: inline-block; vertical-align: middle; }
+  .profile-btn { min-width: 0; flex-shrink: 1; }
+  .controls { gap: 4px; flex-shrink: 0; }
   .control-btn { width: 32px; height: 32px; font-size: 13px; flex-shrink: 0; }
   .logo-mark { width: 28px; height: 28px; font-size: 10px; }
+  #created-room-msg { word-break: break-word; }
 
   .friends-main { padding: 12px 10px; gap: 14px; }
   .group-col { padding: 14px; }
@@ -656,4 +659,10 @@ html[data-theme="dark"] .topbar { background: rgba(28,28,30,0.72); }
   .login-card { padding: 28px 22px; max-width: 92vw; }
 
   .call-timer { font-size: 11px; padding: 1px 7px; }
+}
+
+@media (max-width: 380px) {
+  .controls { gap: 2px; }
+  .control-btn { width: 30px; height: 30px; font-size: 12px; }
+  #my-username-label { max-width: 22vw; }
 }
