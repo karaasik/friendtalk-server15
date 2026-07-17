@@ -91,16 +91,21 @@ const fileInput = document.getElementById('file-input');
 const voiceBtn = document.getElementById('voice-btn');
 const leaveBtn = document.getElementById('leave-btn');
 // NEW: flip camera button
-const flipCamBtn = document.getElementById('flip-cam-btn');
+const flipCamBtn = document.getElementById('flip-cam');
 
-// NEW: photo viewer elements
-const photoViewer = document.getElementById('photo-viewer');
-const photoViewerImg = document.getElementById('photo-viewer-img');
-const photoViewerClose = document.getElementById('photo-viewer-close');
+// NEW: photo viewer elements (the lightbox overlay in index.html)
+const photoViewer = document.getElementById('lightbox');
+const photoViewerImg = document.getElementById('lightbox-img');
+const photoViewerClose = document.getElementById('lightbox-close');
+
+// NEW: room code elements
+const createRoomBtn = document.getElementById('create-room-btn');
+const createdRoomMsg = document.getElementById('created-room-msg');
+const copyCodeBtn = document.getElementById('copy-code-btn');
 
 // NEW: nickname input
 const nicknameInput = document.getElementById('nickname-input');
-const saveNicknameBtn = document.getElementById('save-nickname-btn');
+const saveNicknameBtn = document.getElementById('nickname-save-btn');
 
 let authToken = null;
 let myUserId = null;
@@ -355,14 +360,16 @@ tabBtns.forEach(btn => {
   });
 });
 
-// NEW: password toggle eyes
-document.getElementById('login-password-toggle').addEventListener('click', function() {
-  const input = document.getElementById('login-password');
-  input.type = input.type === 'password' ? 'text' : 'password';
-});
-document.getElementById('register-password-toggle').addEventListener('click', function() {
-  const input = document.getElementById('register-password');
-  input.type = input.type === 'password' ? 'text' : 'password';
+// NEW: password toggle eyes (buttons are matched via class + data-target, not individual IDs)
+document.querySelectorAll('.pw-toggle').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const input = document.getElementById(btn.dataset.target);
+    if (!input) return;
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    btn.textContent = showing ? '👁️' : '🙈';
+    btn.title = showing ? 'Показать пароль' : 'Скрыть пароль';
+  });
 });
 
 // NEW: client-side password validation
@@ -710,49 +717,56 @@ function startFriendChat(friendId, friendUsername) {
   joinRoom(friendRoomId(friendId), `Переписка с ${friendUsername}`, { textOnly: true });
 }
 
-// NEW: комнаты с кодом
-async function createRoomWithCode() {
-  const name = prompt('Введите название комнаты:');
-  if (!name) return;
-  try {
-    const data = await apiRequest('/api/room/create', { method: 'POST', body: { name } });
-    alert(`Комната "${name}" создана! Код: ${data.code}\nПоделитесь кодом с друзьями.`);
-    joinRoom(`group-${data.roomId}`, name, { textOnly: true });
-  } catch (e) {
-    alert('Ошибка: ' + e.message);
+// NEW: комнаты со сложным кодом (генерируется на клиенте, без обращений к серверу —
+// сам код и есть идентификатор socket.io-комнаты, поэтому ничего не может "не найтись").
+let currentGroupCode = null;
+
+// Символы без похожих друг на друга (без 0/O, 1/I/L) — как код лобби в Among Us.
+const ROOM_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+function generateRoomCode(length = 6) {
+  let code = '';
+  if (window.crypto && crypto.getRandomValues) {
+    const arr = new Uint32Array(length);
+    crypto.getRandomValues(arr);
+    for (let i = 0; i < length; i++) code += ROOM_CODE_CHARS[arr[i] % ROOM_CODE_CHARS.length];
+  } else {
+    for (let i = 0; i < length; i++) code += ROOM_CODE_CHARS[Math.floor(Math.random() * ROOM_CODE_CHARS.length)];
   }
+  return code;
 }
 
-async function joinRoomByCode() {
-  const code = prompt('Введите код комнаты:');
-  if (!code) return;
-  try {
-    const data = await apiRequest(`/api/room/by-code?code=${encodeURIComponent(code)}`);
-    joinRoom(data.roomId, data.name, { textOnly: true });
-  } catch (e) {
-    alert('Не удалось войти: ' + e.message);
-  }
+if (createRoomBtn) {
+  createRoomBtn.addEventListener('click', () => {
+    const code = generateRoomCode();
+    currentGroupCode = code;
+    if (createdRoomMsg) {
+      createdRoomMsg.innerHTML = `Код комнаты: <strong>${code}</strong> — отправьте его друзьям, чтобы они присоединились.`;
+    }
+    joinRoom('group-' + code, 'Комната ' + code, { textOnly: false });
+  });
 }
 
 groupRoomForm.addEventListener('submit', (e) => {
   e.preventDefault();
-  const roomId = groupRoomInput.value.trim();
-  if (!roomId) return;
-  // Если ввели код – пытаемся найти по коду, иначе как обычную комнату
-  if (roomId.length === 6 && /^[A-Z0-9]{6}$/.test(roomId)) {
-    joinRoomByCodeWithInput(roomId);
-  } else {
-    joinRoom(roomId, roomId, { textOnly: false });
-  }
+  const code = groupRoomInput.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!code) return;
+  groupRoomInput.value = '';
+  currentGroupCode = code;
+  joinRoom('group-' + code, 'Комната ' + code, { textOnly: false });
 });
 
-async function joinRoomByCodeWithInput(code) {
-  try {
-    const data = await apiRequest(`/api/room/by-code?code=${encodeURIComponent(code)}`);
-    joinRoom(data.roomId, data.name, { textOnly: true });
-  } catch (e) {
-    alert('Комната не найдена: ' + e.message);
-  }
+if (copyCodeBtn) {
+  copyCodeBtn.addEventListener('click', async () => {
+    if (!currentGroupCode) return;
+    try {
+      await navigator.clipboard.writeText(currentGroupCode);
+      copyCodeBtn.textContent = '✅';
+      setTimeout(() => { copyCodeBtn.textContent = '📋'; }, 1200);
+    } catch (e) {
+      prompt('Скопируйте код комнаты:', currentGroupCode);
+    }
+  });
 }
 
 // ---------- Room / chat / WebRTC ----------
@@ -783,6 +797,7 @@ async function joinRoom(roomId, displayLabel, { textOnly = false } = {}) {
   peers.clear();
   roomNameLabel.textContent = displayLabel;
   chatScreen.classList.toggle('text-only', textOnly);
+  if (copyCodeBtn) copyCodeBtn.classList.toggle('hidden', !roomId.startsWith('group-'));
   showScreen(chatScreen);
   if (!textOnly) {
     addLocalVideoTile();
@@ -983,7 +998,6 @@ function detachSpeakingDetector(tileId) {
   try { entry.source.disconnect(); } catch (e) { /* ignore */ }
   speakingDetectors.delete(tileId);
 }
-
 function removePeer(peerId) {
   const entry = peers.get(peerId);
   if (entry) {
