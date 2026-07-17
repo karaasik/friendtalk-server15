@@ -337,8 +337,8 @@ html[data-theme="dark"] .topbar { background: rgba(28,28,30,0.72); }
 #chat-screen.text-only .people-strip { display: none; }
 #chat-screen.text-only #toggle-mic,
 #chat-screen.text-only #toggle-cam,
-#chat-screen.text-only #toggle-screen,
-#chat-screen.text-only #flip-cam-btn { display: none; }
+#chat-screen.text-only #flip-cam,
+#chat-screen.text-only #toggle-screen { display: none; }
 #chat-screen.text-only .chat-panel {
   max-width: 640px;
   width: 100%;
@@ -479,13 +479,7 @@ html[data-theme="dark"] .topbar { background: rgba(28,28,30,0.72); }
 
 /* ---------- Message attachments ---------- */
 .msg-attachment { margin-top: 6px; }
-.msg-attachment img {
-  max-width: 240px;
-  max-height: 240px;
-  border-radius: 12px;
-  display: block;
-  cursor: pointer;
-}
+.msg-attachment img { max-width: 240px; max-height: 240px; border-radius: 12px; display: block; }
 .msg-attachment video { max-width: 280px; max-height: 280px; border-radius: 12px; display: block; }
 .msg-attachment audio { width: 240px; }
 .msg-attachment .file-link {
@@ -563,92 +557,103 @@ html[data-theme="dark"] .topbar { background: rgba(28,28,30,0.72); }
   font-size: 13.5px;
 }
 
-/* ---------- NEW: Photo viewer ---------- */
-#photo-viewer .overlay-card {
-  background: transparent;
-  box-shadow: none;
-  padding: 0;
-  max-width: 90%;
-}
-#photo-viewer-img {
-  width: 100%;
-  height: auto;
-  max-height: 90vh;
-  border-radius: 12px;
-  object-fit: contain;
-  background: rgba(0,0,0,0.8);
-}
-#photo-viewer-close {
-  margin-top: 12px;
-  width: 100%;
-}
-
-/* ---------- NEW: Password toggle eye ---------- */
-.password-toggle {
+/* ---------- Password show/hide ---------- */
+.password-wrap { position: relative; display: block; }
+.password-wrap input { width: 100%; padding-right: 40px; }
+.pw-toggle {
   position: absolute;
-  right: 10px;
+  right: 6px;
   top: 50%;
   transform: translateY(-50%);
+  background: none;
+  border: none;
   cursor: pointer;
+  font-size: 15px;
   opacity: 0.6;
-  font-size: 18px;
-  user-select: none;
+  padding: 4px;
 }
-.password-toggle:hover { opacity: 1; }
+.pw-toggle:hover { opacity: 1; }
 
-/* ---------- NEW: Mobile responsiveness ---------- */
-@media (max-width: 640px) {
-  .topbar {
-    padding: 8px 10px;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .room-info { font-size: 13px; }
-  .control-btn {
-    width: 30px;
-    height: 30px;
-    font-size: 13px;
-  }
-  .friends-main {
-    padding: 12px 10px;
-  }
-  .friends-col, .group-col {
-    min-width: 100%;
-  }
+/* ---------- Profile / nickname ---------- */
+.field-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.nickname-row { display: flex; gap: 8px; margin-top: 6px; }
+.nickname-row input {
+  flex: 1;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 12px;
+  color: var(--text-main);
+  font-family: inherit;
+  outline: none;
+}
+.nickname-row input:focus { border-color: var(--accent); }
+
+/* ---------- Image lightbox ---------- */
+.lightbox-inner { position: relative; max-width: 92vw; max-height: 88vh; }
+.lightbox-inner img { max-width: 92vw; max-height: 88vh; border-radius: 12px; display: block; }
+.lightbox-close-btn { position: absolute; top: -14px; right: -14px; }
+.msg-attachment img { cursor: pointer; }
+
+/* ---------- Admin reset-password inline form ---------- */
+.admin-reset-row { display: flex; gap: 6px; margin-top: 6px; }
+.admin-reset-row input {
+  flex: 1;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--text-main);
+  font-family: inherit;
+}
+
+/* ==================================================================
+   MOBILE — tuned for narrow phone screens, not just a scaled-down desktop
+   ================================================================== */
+@media (max-width: 760px) {
+  .video-tile { width: 220px; }
+  .friends-main { flex-direction: column; padding: 16px 12px; }
+}
+
+@media (max-width: 520px) {
+  .topbar { padding: 10px 12px; flex-wrap: nowrap; }
+  .room-info { font-size: 13px; gap: 6px; min-width: 0; overflow: hidden; }
+  .room-info span#room-name-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 34vw; }
+  .controls { gap: 4px; }
+  .control-btn { width: 32px; height: 32px; font-size: 13px; flex-shrink: 0; }
+  .logo-mark { width: 28px; height: 28px; font-size: 10px; }
+
+  .friends-main { padding: 12px 10px; gap: 14px; }
+  .group-col { padding: 14px; }
   .friend-list li, .request-list li {
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 8px;
+    padding: 10px;
   }
-  .video-grid {
-    max-height: 180px;
-    padding: 8px;
-  }
-  .video-tile {
-    width: 160px;
-  }
-  .chat-panel {
-    padding: 0 4px;
-  }
-  .messages {
-    padding: 10px 8px;
-  }
-  .bubble {
-    font-size: 13px;
-    padding: 6px 10px;
-    max-width: 85%;
-  }
-  #chat-form {
-    padding: 6px 8px;
-  }
-  #chat-input {
-    font-size: 14px;
-    padding: 8px 12px;
-  }
-  .overlay-card {
-    padding: 16px;
-    max-width: 95%;
-  }
-  .avatar-grid {
-    grid-template-columns: repeat(4, 1fr);
-  }
+  .friend-name { min-width: 0; flex: 1 1 auto; }
+  .friend-meta span:first-child { word-break: break-word; }
+  .row-actions { flex-wrap: wrap; gap: 6px; width: 100%; justify-content: flex-end; }
+  .pill-btn { padding: 6px 10px; font-size: 12px; }
+
+  .video-grid { max-height: 180px; }
+  .video-tile { width: 180px; }
+
+  .bubble { max-width: 86%; font-size: 14px; }
+  .msg-attachment img, .msg-attachment video { max-width: 60vw; max-height: 200px; }
+
+  #chat-form { padding: 8px; gap: 4px; }
+  #chat-input { padding: 8px 12px; font-size: 14px; min-width: 0; }
+  #attach-btn, #voice-btn { width: 32px; height: 32px; font-size: 14px; }
+  #chat-form button[type="submit"] { width: 32px; height: 32px; }
+
+  .overlay-card { max-width: 92vw; padding: 20px; max-height: 86vh; overflow-y: auto; }
+  .avatar-grid { grid-template-columns: repeat(4, 1fr); }
+  .login-card { padding: 28px 22px; max-width: 92vw; }
+
+  .call-timer { font-size: 11px; padding: 1px 7px; }
 }
