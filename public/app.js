@@ -202,6 +202,7 @@ if (notifBtn) {
       await Notification.requestPermission();
     }
     updateNotifBtn();
+    subscribeToPush();
   });
   updateNotifBtn();
 }
@@ -209,6 +210,34 @@ if (notifBtn) {
 function showNotification(title, body) {
   if ('Notification' in window && Notification.permission === 'granted') {
     try { new Notification(title, { body, icon: undefined }); } catch (e) { /* ignore */ }
+  }
+}
+
+// ---------- Push subscription (so notifications arrive even when the app is closed) ----------
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+
+async function subscribeToPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const { publicKey } = await apiRequest('/api/push/vapid-public-key');
+      if (!publicKey) return; // server has no VAPID keys configured yet
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey)
+      });
+    }
+    await apiRequest('/api/push/subscribe', { method: 'POST', body: { subscription: sub } });
+  } catch (e) {
+    console.warn('Push-подписка не удалась:', e);
   }
 }
 
@@ -254,6 +283,7 @@ async function verifySession() {
     adminBtn.classList.toggle('hidden', !isAdmin);
     connectPersistentSocket();
     enterFriendsScreen();
+    subscribeToPush();
   } catch (e) {
     authToken = null;
     try { localStorage.removeItem('ft_token'); } catch (err) {}
