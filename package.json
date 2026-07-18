@@ -1,7 +1,7 @@
 {
   "name": "friendtalk-server",
-  "version": "2.0.0",
-  "description": "Backend server for FriendTalk - accounts, friends, text/voice/video chat",
+  "version": "2.1.0",
+  "description": "Backend server for FriendTalk - accounts, friends, text/voice/video chat, push notifications",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -15,6 +15,7 @@
     "pg": "^8.11.5",
     "bcryptjs": "^2.4.3",
     "helmet": "^7.1.0",
-    "express-rate-limit": "^7.2.0"
+    "express-rate-limit": "^7.2.0",
+    "web-push": "^3.6.7"
   }
 }
