@@ -1,5 +1,6 @@
 // FriendTalk server v2
 // Adds: user accounts, friend requests/list, plus existing room chat + WebRTC signaling.
+// v2.1: merged admin+support into one login, added Web Push notifications.
 
 const path = require('path');
 const crypto = require('crypto');
@@ -10,6 +11,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const webpush = require('web-push');
 
 const app = express();
 const server = http.createServer(app);
@@ -38,6 +40,19 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
+
+// ---------- Web Push setup ----------
+// Generate keys once with: npx web-push generate-vapid-keys
+// Then set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT as environment variables on Render.
+if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(
+    process.env.VAPID_SUBJECT || 'mailto:admin@example.com',
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+  );
+} else {
+  console.warn('ВНИМАНИЕ: VAPID-ключи не заданы — push-уведомления работать не будут.');
+}
 
 async function initDb() {
   if (!process.env.DATABASE_URL) return;
@@ -90,12 +105,23 @@ async function initDb() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, created_at);
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      endpoint TEXT UNIQUE NOT NULL,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
   console.log('База данных готова.');
 }
 initDb().catch(err => console.error('Ошибка инициализации БД:', err));
 
-const SUPPORT_USERNAME = 'support';
-const ADMIN_USERNAME = 'admin';
+// Один логин теперь совмещает и админку, и поддержку.
+const SUPPORT_USERNAME = 'hdfnfdNFKjdk1551JNFDK';
+const ADMIN_USERNAME = 'hdfnfdNFKjdk1551JNFDK';
 
 function requireAdmin(req, res, next) {
   if (req.username !== ADMIN_USERNAME) return res.status(403).json({ error: 'Только для администратора' });
@@ -116,6 +142,33 @@ async function autoFriendSupport(newUserId) {
     );
   } catch (err) {
     console.error('Не удалось добавить поддержку в друзья:', err);
+  }
+}
+
+// Sends a push notification to every subscribed device of a user (used so calls/messages
+// reach them even when the app/tab is closed and they have no active socket connection).
+async function sendPushToUser(userId, { title, body, url }) {
+  if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) return;
+  try {
+    const result = await pool.query('SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1', [userId]);
+    const payload = JSON.stringify({ title, body, url: url || '/' });
+    await Promise.all(result.rows.map(async (row) => {
+      try {
+        await webpush.sendNotification(
+          { endpoint: row.endpoint, keys: { p256dh: row.p256dh, auth: row.auth } },
+          payload
+        );
+      } catch (err) {
+        if (err.statusCode === 404 || err.statusCode === 410) {
+          // subscription expired or was revoked by the browser — clean it up
+          await pool.query('DELETE FROM push_subscriptions WHERE id = $1', [row.id]);
+        } else {
+          console.error('Push-ошибка:', err.statusCode, err.body);
+        }
+      }
+    }));
+  } catch (err) {
+    console.error('Не удалось отправить push:', err);
   }
 }
 
@@ -246,6 +299,28 @@ app.patch('/api/me/nickname', requireAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Не удалось сохранить ник' });
+  }
+});
+
+// ---------- Push subscription endpoints ----------
+app.get('/api/push/vapid-public-key', requireAuth, (req, res) => {
+  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY || '' });
+});
+
+app.post('/api/push/subscribe', requireAuth, async (req, res) => {
+  try {
+    const sub = (req.body || {}).subscription;
+    if (!sub || !sub.endpoint || !sub.keys) return res.status(400).json({ error: 'Некорректная подписка' });
+    await pool.query(
+      `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (endpoint) DO UPDATE SET user_id = $1, p256dh = $3, auth = $4`,
+      [req.userId, sub.endpoint, sub.keys.p256dh, sub.keys.auth]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось сохранить подписку' });
   }
 });
 
@@ -653,6 +728,7 @@ io.on('connection', (socket) => {
       const otherId = otherDmParticipant(roomId, userId);
       if (otherId && !isUserInRoom(roomId, otherId)) {
         io.to('user-' + otherId).emit('incoming-call', { roomId, fromUsername: username });
+        sendPushToUser(otherId, { title: 'Входящий звонок', body: `${username} звонит вам`, url: '/' });
       }
     }
   });
@@ -697,6 +773,7 @@ io.on('connection', (socket) => {
           fromUsername: currentUsername,
           preview: text.slice(0, 120)
         });
+        sendPushToUser(otherId, { title: `Сообщение от ${currentUsername}`, body: text.slice(0, 120), url: '/' });
       }
     }
   });
@@ -748,6 +825,7 @@ io.on('connection', (socket) => {
           fromUsername: currentUsername,
           preview
         });
+        sendPushToUser(otherId, { title: `Сообщение от ${currentUsername}`, body: preview, url: '/' });
       }
     }
   });
