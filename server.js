@@ -397,7 +397,19 @@ app.get('/api/support', requireAuth, async (req, res) => {
   try {
     const result = await pool.query('SELECT id, username FROM users WHERE username = $1', [SUPPORT_USERNAME]);
     if (result.rows.length === 0) return res.json({ available: false });
-    res.json({ available: true, id: result.rows[0].id, username: result.rows[0].username });
+    const supportId = result.rows[0].id;
+
+    // Каждый, кто открыл чат с поддержкой, автоматически становится другом поддержки —
+    // это позволяет админу видеть его в списке друзей и писать первым.
+    if (supportId !== req.userId) {
+      await pool.query(
+        `INSERT INTO friend_requests (from_user, to_user, status) VALUES ($1, $2, 'accepted')
+         ON CONFLICT (from_user, to_user) DO UPDATE SET status = 'accepted'`,
+        [supportId, req.userId]
+      );
+    }
+
+    res.json({ available: true, id: supportId, username: result.rows[0].username });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка сервера' });
