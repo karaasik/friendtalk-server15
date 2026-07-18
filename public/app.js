@@ -64,6 +64,8 @@ const incomingBlock = document.getElementById('incoming-block');
 const incomingList = document.getElementById('incoming-list');
 const outgoingBlock = document.getElementById('outgoing-block');
 const outgoingList = document.getElementById('outgoing-list');
+const supportContactsBlock = document.getElementById('support-contacts-block');
+const supportContactsList = document.getElementById('support-contacts-list');
 const friendsList = document.getElementById('friends-list');
 const noFriendsMsg = document.getElementById('no-friends-msg');
 const groupRoomForm = document.getElementById('group-room-form');
@@ -626,7 +628,7 @@ async function loadFriends() {
 }
 
 function renderFriendsFromCache() {
-  renderFriendsList(friendsCache);
+  applyFriendsSplit(friendsCache);
 }
 
 function renderFriends({ friends, incoming, outgoing }) {
@@ -657,12 +659,29 @@ function renderFriends({ friends, incoming, outgoing }) {
     outgoingList.appendChild(li);
   });
 
-  renderFriendsList(friends);
+  applyFriendsSplit(friends);
 }
 
-function renderFriendsList(friends) {
-  friendsList.innerHTML = '';
-  noFriendsMsg.classList.toggle('hidden', friends.length > 0);
+// On the merged admin+support account, people who only wrote in via the "Поддержка" button
+// are kept in their own "Обращения в поддержку" list instead of mixing into personal friends —
+// keeps the real friends list readable. Regular accounts never see this split.
+function applyFriendsSplit(friends) {
+  if (isAdmin) {
+    const supportContacts = friends.filter(f => f.viaSupport);
+    const regularFriends = friends.filter(f => !f.viaSupport);
+    supportContactsBlock.classList.toggle('hidden', supportContacts.length === 0);
+    renderFriendItems(supportContacts, supportContactsList);
+    renderFriendItems(regularFriends, friendsList);
+    noFriendsMsg.classList.toggle('hidden', regularFriends.length > 0);
+  } else {
+    supportContactsBlock.classList.add('hidden');
+    renderFriendItems(friends, friendsList);
+    noFriendsMsg.classList.toggle('hidden', friends.length > 0);
+  }
+}
+
+function renderFriendItems(friends, listEl) {
+  listEl.innerHTML = '';
   friends.forEach(f => {
     const li = document.createElement('li');
     const unread = unreadCounts.get(f.id) || 0;
@@ -688,7 +707,7 @@ function renderFriendsList(friends) {
     li.querySelector('.message').addEventListener('click', () => startFriendChat(f.id, f.username));
     li.querySelector('.call').addEventListener('click', () => startFriendCall(f.id, f.username));
     li.querySelector('.remove').addEventListener('click', () => removeFriend(f.id, f.username));
-    friendsList.appendChild(li);
+    listEl.appendChild(li);
   });
 }
 
