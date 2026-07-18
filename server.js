@@ -86,6 +86,7 @@ async function initDb() {
       UNIQUE(from_user, to_user)
     );
   `);
+  await pool.query(`ALTER TABLE friend_requests ADD COLUMN IF NOT EXISTS via_support BOOLEAN NOT NULL DEFAULT false;`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS messages (
       id SERIAL PRIMARY KEY,
@@ -136,8 +137,8 @@ async function autoFriendSupport(newUserId) {
     const supportId = supportResult.rows[0].id;
     if (supportId === newUserId) return;
     await pool.query(
-      `INSERT INTO friend_requests (from_user, to_user, status) VALUES ($1, $2, 'accepted')
-       ON CONFLICT (from_user, to_user) DO UPDATE SET status = 'accepted'`,
+      `INSERT INTO friend_requests (from_user, to_user, status, via_support) VALUES ($1, $2, 'accepted', true)
+       ON CONFLICT (from_user, to_user) DO UPDATE SET status = 'accepted', via_support = true`,
       [supportId, newUserId]
     );
   } catch (err) {
@@ -401,10 +402,12 @@ app.get('/api/support', requireAuth, async (req, res) => {
 
     // Каждый, кто открыл чат с поддержкой, автоматически становится другом поддержки —
     // это позволяет админу видеть его в списке друзей и писать первым.
+    // via_support = true помечает эту связь как "обращение в поддержку", а не личного друга,
+    // чтобы их можно было показать отдельным списком.
     if (supportId !== req.userId) {
       await pool.query(
-        `INSERT INTO friend_requests (from_user, to_user, status) VALUES ($1, $2, 'accepted')
-         ON CONFLICT (from_user, to_user) DO UPDATE SET status = 'accepted'`,
+        `INSERT INTO friend_requests (from_user, to_user, status, via_support) VALUES ($1, $2, 'accepted', true)
+         ON CONFLICT (from_user, to_user) DO UPDATE SET status = 'accepted', via_support = true`,
         [supportId, req.userId]
       );
     }
@@ -502,7 +505,7 @@ app.delete('/api/friends/:friendId', requireAuth, async (req, res) => {
 app.get('/api/friends', requireAuth, async (req, res) => {
   try {
     const friends = await pool.query(
-      `SELECT u.id, u.username, u.nickname, u.last_seen_at, u.avatar FROM friend_requests fr
+      `SELECT u.id, u.username, u.nickname, u.last_seen_at, u.avatar, fr.via_support FROM friend_requests fr
        JOIN users u ON u.id = CASE WHEN fr.from_user = $1 THEN fr.to_user ELSE fr.from_user END
        WHERE fr.status = 'accepted' AND (fr.from_user = $1 OR fr.to_user = $1)
          AND u.username != $2
@@ -532,7 +535,8 @@ app.get('/api/friends', requireAuth, async (req, res) => {
         username: f.nickname || f.username,
         avatar: f.avatar,
         online: onlineUsers.has(f.id),
-        lastSeen: f.last_seen_at ? new Date(f.last_seen_at).getTime() : null
+        lastSeen: f.last_seen_at ? new Date(f.last_seen_at).getTime() : null,
+        viaSupport: !!f.via_support
       })),
       incoming: incoming.rows.map(r => ({ id: r.id, username: r.nickname || r.username, avatar: r.avatar })),
       outgoing: outgoing.rows.map(r => ({ id: r.id, username: r.nickname || r.username, avatar: r.avatar }))
