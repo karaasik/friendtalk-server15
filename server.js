@@ -173,6 +173,12 @@ async function sendPushToUser(userId, { title, body, url }) {
   }
 }
 
+// Pushes a live "your friends list changed" signal to a user's connected tabs, so accepting/
+// receiving a friend request (or being removed) shows up instantly without reloading the page.
+function notifyFriendsChanged(userId) {
+  io.to('user-' + userId).emit('friends-updated');
+}
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -359,6 +365,7 @@ app.post('/api/friends/request', requireAuth, async (req, res) => {
     );
     if (reverse.rows.length > 0) {
       await pool.query(`UPDATE friend_requests SET status = 'accepted' WHERE id = $1`, [reverse.rows[0].id]);
+      notifyFriendsChanged(toUser);
       return res.json({ status: 'accepted' });
     }
 
@@ -367,6 +374,7 @@ app.post('/api/friends/request', requireAuth, async (req, res) => {
        ON CONFLICT (from_user, to_user) DO UPDATE SET status = 'pending'`,
       [req.userId, toUser]
     );
+    notifyFriendsChanged(toUser);
     res.json({ status: 'pending' });
   } catch (err) {
     console.error(err);
@@ -387,6 +395,7 @@ app.post('/api/friends/respond', requireAuth, async (req, res) => {
 
     const status = action === 'accept' ? 'accepted' : 'declined';
     await pool.query('UPDATE friend_requests SET status = $1 WHERE id = $2', [status, requestId]);
+    notifyFriendsChanged(reqResult.rows[0].from_user);
     res.json({ status });
   } catch (err) {
     console.error(err);
@@ -410,6 +419,7 @@ app.get('/api/support', requireAuth, async (req, res) => {
          ON CONFLICT (from_user, to_user) DO UPDATE SET status = 'accepted', via_support = true`,
         [supportId, req.userId]
       );
+      notifyFriendsChanged(supportId);
     }
 
     res.json({ available: true, id: supportId, username: result.rows[0].username });
@@ -495,6 +505,7 @@ app.delete('/api/friends/:friendId', requireAuth, async (req, res) => {
        (from_user = $1 AND to_user = $2) OR (from_user = $2 AND to_user = $1)`,
       [req.userId, friendId]
     );
+    notifyFriendsChanged(friendId);
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
