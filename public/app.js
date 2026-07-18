@@ -1,5 +1,14 @@
 // FriendTalk client v2 — accounts, friends, rooms with voice/video
 
+// Бесплатные TURN-серверы "openrelayproject" ниже — общедоступные демо-данные, которыми
+// одновременно пользуются тысячи проектов, поэтому они иногда перегружены и не успевают
+// проксировать медиапоток между разными сотовыми операторами (типичная причина того, что
+// звонок принимается, но остаётся чёрный/зависший экран). Чтобы починить это надёжно —
+// зарегистрируйте свой бесплатный TURN (до 20 ГБ/мес) на https://dashboard.metered.ca/signup
+// и вставьте выданные вам username/credential сюда:
+const OWN_TURN_USERNAME = '7479548091db7f3f4070f9d4';
+const OWN_TURN_CREDENTIAL = 'L4MJiztARzzUuRSs';
+
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -17,7 +26,13 @@ const ICE_SERVERS = [
     urls: 'turn:openrelay.metered.ca:443?transport=tcp',
     username: 'openrelayproject',
     credential: 'openrelayproject'
-  }
+  },
+  ...(OWN_TURN_USERNAME ? [
+    { urls: 'turn:standard.relay.metered.ca:80', username: OWN_TURN_USERNAME, credential: OWN_TURN_CREDENTIAL },
+    { urls: 'turn:standard.relay.metered.ca:80?transport=tcp', username: OWN_TURN_USERNAME, credential: OWN_TURN_CREDENTIAL },
+    { urls: 'turn:standard.relay.metered.ca:443', username: OWN_TURN_USERNAME, credential: OWN_TURN_CREDENTIAL },
+    { urls: 'turns:standard.relay.metered.ca:443?transport=tcp', username: OWN_TURN_USERNAME, credential: OWN_TURN_CREDENTIAL }
+  ] : [])
 ];
 
 const API_BASE = location.origin;
@@ -329,6 +344,12 @@ function connectPersistentSocket() {
       if (lastSeen) friend.lastSeen = lastSeen;
       renderFriendsFromCache();
     }
+  });
+
+  // Fired by the server the instant a friend request is sent, accepted, declined,
+  // or a friend is removed — no need to reload or re-enter the screen to see it.
+  socket.on('friends-updated', () => {
+    loadFriends();
   });
 
   socket.on('message-deleted', ({ id }) => {
@@ -953,7 +974,7 @@ function createPeerConnection(peerId, username, isInitiator, avatar) {
   if (peers.has(peerId)) return;
 
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS, iceCandidatePoolSize: 10 });
-  const peerEntry = { pc, username, avatar: avatar || 1, reconnectTimer: null };
+  const peerEntry = { pc, username, avatar: avatar || 1, reconnectTimer: null, connectTimeout: null, connectedOnce: false };
   peers.set(peerId, peerEntry);
 
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
@@ -980,8 +1001,25 @@ function createPeerConnection(peerId, username, isInitiator, avatar) {
   // outright "failed" state — waiting a few seconds before restarting avoids fighting
   // a connection that's about to recover on its own, while still catching real drops
   // (this is the fix for calls that quietly go silent after a few minutes).
+  // If the connection never leaves "checking" within a few seconds — often what happens when
+  // a TURN relay is overloaded and can't complete the handshake — retry instead of leaving
+  // the person staring at a black/frozen call screen indefinitely.
+  peerEntry.connectTimeout = setTimeout(() => {
+    if (!peerEntry.connectedOnce) {
+      addMessage({ system: true, text: `Не удаётся установить соединение с ${username} — проверьте интернет-соединение…`, time: Date.now() });
+      attemptReconnect();
+    }
+  }, 9000);
+
   pc.oniceconnectionstatechange = () => {
     const state = pc.iceConnectionState;
+    if (state === 'connected' || state === 'completed') {
+      peerEntry.connectedOnce = true;
+      if (peerEntry.connectTimeout) {
+        clearTimeout(peerEntry.connectTimeout);
+        peerEntry.connectTimeout = null;
+      }
+    }
     if (peerEntry.reconnectTimer) {
       clearTimeout(peerEntry.reconnectTimer);
       peerEntry.reconnectTimer = null;
@@ -1050,6 +1088,7 @@ function removePeer(peerId) {
   const entry = peers.get(peerId);
   if (entry) {
     if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
+    if (entry.connectTimeout) clearTimeout(entry.connectTimeout);
     entry.pc.close();
     peers.delete(peerId);
   }
@@ -1106,6 +1145,23 @@ function addRemoteVideoTile(peerId, username, stream, avatar) {
   }
   const video = tile.querySelector('video');
   video.srcObject = stream;
+
+  // iOS Safari sometimes silently blocks autoplay of unmuted remote video/audio.
+  // If that happens, surface a one-tap button instead of a call that looks connected but is silent.
+  const playPromise = video.play();
+  if (playPromise && playPromise.catch) {
+    playPromise.catch(() => {
+      const tapBtn = document.createElement('button');
+      tapBtn.textContent = '🔊 Нажмите, чтобы включить звук/видео';
+      tapBtn.style.cssText = 'position:absolute;inset:auto 8px 8px 8px;z-index:5;padding:8px 10px;border:none;border-radius:8px;background:rgba(0,0,0,0.75);color:#fff;font-size:13px;cursor:pointer;';
+      tapBtn.addEventListener('click', () => {
+        video.play().catch(() => {});
+        tapBtn.remove();
+      });
+      tile.style.position = 'relative';
+      tile.appendChild(tapBtn);
+    });
+  }
 
   // Note: on the receiving end, track.enabled is a local-only flag and does not
   // reflect whether the sender is actually providing video — track.muted does.
