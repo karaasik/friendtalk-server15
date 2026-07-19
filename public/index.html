@@ -144,6 +144,7 @@
         <button id="toggle-cam" class="control-btn" title="Камера">📷</button>
         <button id="flip-cam" class="control-btn" title="Сменить камеру">🔄</button>
         <button id="toggle-screen" class="control-btn" title="Демонстрация экрана">🖥️</button>
+        <button id="search-btn" class="control-btn" title="Поиск по сообщениям">🔍</button>
         <button id="theme-btn-chat" class="control-btn" title="Светлая/тёмная тема">🌙</button>
         <button id="leave-btn" class="control-btn danger" title="Назад к друзьям">✕</button>
       </div>
@@ -157,7 +158,15 @@
       </div>
 
       <div class="chat-panel">
+        <div id="chat-search-bar" class="chat-search-bar hidden">
+          <input id="chat-search-input" type="text" placeholder="Поиск по сообщениям…" autocomplete="off" />
+          <span id="chat-search-counter" class="chat-search-counter">0/0</span>
+          <button type="button" id="chat-search-prev" title="Предыдущее совпадение">˄</button>
+          <button type="button" id="chat-search-next" title="Следующее совпадение">˅</button>
+          <button type="button" id="chat-search-close" title="Закрыть поиск">✕</button>
+        </div>
         <div class="messages" id="messages"></div>
+        <div id="typing-indicator" class="typing-indicator hidden"></div>
         <form id="chat-form" autocomplete="off">
           <input id="file-input" type="file" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.zip" class="hidden" />
           <button type="button" id="attach-btn" title="Прикрепить файл">📎</button>
