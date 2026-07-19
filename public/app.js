@@ -117,6 +117,14 @@ const leaveBtn = document.getElementById('leave-btn');
 const lightbox = document.getElementById('lightbox');
 const lightboxImg = document.getElementById('lightbox-img');
 const lightboxClose = document.getElementById('lightbox-close');
+const searchBtn = document.getElementById('search-btn');
+const chatSearchBar = document.getElementById('chat-search-bar');
+const chatSearchInput = document.getElementById('chat-search-input');
+const chatSearchCounter = document.getElementById('chat-search-counter');
+const chatSearchPrevBtn = document.getElementById('chat-search-prev');
+const chatSearchNextBtn = document.getElementById('chat-search-next');
+const chatSearchCloseBtn = document.getElementById('chat-search-close');
+const typingIndicator = document.getElementById('typing-indicator');
 
 let authToken = null;
 let myUserId = null;
@@ -134,6 +142,11 @@ let activeRoomId = null; // room currently open in the chat screen, or null when
 const peers = new Map();
 const unreadCounts = new Map(); // friendId -> count
 let friendsCache = []; // last loaded friends list, used to resolve notifications to names
+let remoteTypingTimeout = null;
+let localTypingStopTimer = null;
+let lastTypingEmit = 0;
+let searchMatches = [];
+let currentSearchIndex = -1;
 
 // ---------- Avatars ----------
 // 15 hand-picked options: a friendly emoji over a soft gradient, no external images needed.
@@ -855,6 +868,9 @@ async function joinRoom(roomId, displayLabel, { textOnly = false, code = null } 
   peopleUl.innerHTML = '';
   messagesEl.innerHTML = '';
   peers.clear();
+  closeMessageSearch();
+  typingIndicator.classList.add('hidden');
+  if (remoteTypingTimeout) { clearTimeout(remoteTypingTimeout); remoteTypingTimeout = null; }
   roomNameLabel.textContent = displayLabel;
   currentRoomCode = code;
   copyCodeBtn.classList.toggle('hidden', !code);
@@ -968,6 +984,18 @@ function registerSocketHandlers() {
   });
 
   socket.on('chat-message', (msg) => addMessage(msg));
+
+  socket.on('typing', ({ username }) => {
+    typingIndicator.textContent = `${username} печатает…`;
+    typingIndicator.classList.remove('hidden');
+    if (remoteTypingTimeout) clearTimeout(remoteTypingTimeout);
+    remoteTypingTimeout = setTimeout(() => typingIndicator.classList.add('hidden'), 4000);
+  });
+
+  socket.on('stop-typing', () => {
+    typingIndicator.classList.add('hidden');
+    if (remoteTypingTimeout) { clearTimeout(remoteTypingTimeout); remoteTypingTimeout = null; }
+  });
 }
 
 function createPeerConnection(peerId, username, isInitiator, avatar) {
@@ -1214,6 +1242,24 @@ chatForm.addEventListener('submit', (e) => {
   if (!text || !socket) return;
   socket.emit('chat-message', text);
   chatInput.value = '';
+  if (localTypingStopTimer) { clearTimeout(localTypingStopTimer); localTypingStopTimer = null; }
+  socket.emit('stop-typing');
+  lastTypingEmit = 0;
+});
+
+chatInput.addEventListener('input', () => {
+  if (!socket || !activeRoomId) return;
+  const now = Date.now();
+  // Throttle: only emit 'typing' at most once every 2s while the person keeps typing.
+  if (now - lastTypingEmit > 2000) {
+    socket.emit('typing');
+    lastTypingEmit = now;
+  }
+  if (localTypingStopTimer) clearTimeout(localTypingStopTimer);
+  localTypingStopTimer = setTimeout(() => {
+    socket.emit('stop-typing');
+    lastTypingEmit = 0;
+  }, 3000);
 });
 
 // ---------- Image lightbox ----------
@@ -1574,3 +1620,101 @@ function escapeHtml(str) {
   div.textContent = str;
   return div.innerHTML;
 }
+
+// ---------- In-conversation message search ----------
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function clearSearchHighlights() {
+  messagesEl.querySelectorAll('.bubble-text mark.search-hit').forEach(mark => {
+    const parent = mark.parentNode;
+    if (!parent) return;
+    parent.replaceChild(document.createTextNode(mark.textContent), mark);
+    parent.normalize();
+  });
+  messagesEl.querySelectorAll('.msg-row.search-current').forEach(r => r.classList.remove('search-current'));
+  searchMatches = [];
+  currentSearchIndex = -1;
+}
+
+function performMessageSearch(query) {
+  clearSearchHighlights();
+  const trimmed = query.trim();
+  if (!trimmed) { updateSearchCounter(); return; }
+  const testRegex = new RegExp(escapeRegex(trimmed), 'i');
+  const replaceRegex = new RegExp(escapeRegex(escapeHtml(trimmed)), 'gi');
+  messagesEl.querySelectorAll('.bubble-text').forEach(el => {
+    const text = el.textContent;
+    if (!testRegex.test(text)) return;
+    el.innerHTML = escapeHtml(text).replace(replaceRegex, (m) => `<mark class="search-hit">${m}</mark>`);
+    const row = el.closest('.msg-row');
+    if (row) searchMatches.push(row);
+  });
+  if (searchMatches.length > 0) {
+    currentSearchIndex = 0;
+    focusSearchMatch();
+  } else {
+    updateSearchCounter();
+  }
+}
+
+function focusSearchMatch() {
+  messagesEl.querySelectorAll('.msg-row.search-current').forEach(r => r.classList.remove('search-current'));
+  const row = searchMatches[currentSearchIndex];
+  if (row) {
+    row.classList.add('search-current');
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  updateSearchCounter();
+}
+
+function updateSearchCounter() {
+  chatSearchCounter.textContent = searchMatches.length ? `${currentSearchIndex + 1}/${searchMatches.length}` : '0/0';
+}
+
+function closeMessageSearch() {
+  chatSearchBar.classList.add('hidden');
+  chatSearchInput.value = '';
+  clearSearchHighlights();
+  updateSearchCounter();
+}
+
+searchBtn.addEventListener('click', () => {
+  const opening = chatSearchBar.classList.contains('hidden');
+  if (opening) {
+    chatSearchBar.classList.remove('hidden');
+    chatSearchInput.focus();
+  } else {
+    closeMessageSearch();
+  }
+});
+
+chatSearchCloseBtn.addEventListener('click', closeMessageSearch);
+
+let searchDebounceTimer = null;
+chatSearchInput.addEventListener('input', () => {
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => performMessageSearch(chatSearchInput.value), 200);
+});
+
+chatSearchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (e.shiftKey) chatSearchPrevBtn.click(); else chatSearchNextBtn.click();
+  } else if (e.key === 'Escape') {
+    closeMessageSearch();
+  }
+});
+
+chatSearchNextBtn.addEventListener('click', () => {
+  if (!searchMatches.length) return;
+  currentSearchIndex = (currentSearchIndex + 1) % searchMatches.length;
+  focusSearchMatch();
+});
+
+chatSearchPrevBtn.addEventListener('click', () => {
+  if (!searchMatches.length) return;
+  currentSearchIndex = (currentSearchIndex - 1 + searchMatches.length) % searchMatches.length;
+  focusSearchMatch();
+});
