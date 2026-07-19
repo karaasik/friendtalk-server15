@@ -175,7 +175,7 @@ input[type="text"], input[type="password"] {
   border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--input-bg);
-  font-size: 15px;
+  font-size: 16px;
   outline: none;
   transition: border-color 0.15s;
 }
@@ -366,7 +366,7 @@ input[type="text"]:focus, input[type="password"]:focus {
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--input-bg);
-  font-size: 14px;
+  font-size: 16px;
   outline: none;
 }
 .add-friend-form input:focus { border-color: var(--accent); }
@@ -700,7 +700,7 @@ input[type="text"]:focus, input[type="password"]:focus {
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--input-bg);
-  font-size: 14px;
+  font-size: 16px;
   outline: none;
 }
 #chat-input:focus { border-color: var(--accent); }
@@ -765,6 +765,7 @@ input[type="text"]:focus, input[type="password"]:focus {
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--input-bg);
+  font-size: 16px;
 }
 .field-label { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
 
@@ -807,7 +808,7 @@ input[type="text"]:focus, input[type="password"]:focus {
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--input-bg);
-  font-size: 13px;
+  font-size: 16px;
 }
 
 /* ---------- Lightbox ---------- */
