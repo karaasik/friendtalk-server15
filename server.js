@@ -414,12 +414,25 @@ app.get('/api/support', requireAuth, async (req, res) => {
     // via_support = true помечает эту связь как "обращение в поддержку", а не личного друга,
     // чтобы их можно было показать отдельным списком.
     if (supportId !== req.userId) {
-      await pool.query(
+      const upsertResult = await pool.query(
         `INSERT INTO friend_requests (from_user, to_user, status, via_support) VALUES ($1, $2, 'accepted', true)
-         ON CONFLICT (from_user, to_user) DO UPDATE SET status = 'accepted', via_support = true`,
+         ON CONFLICT (from_user, to_user) DO UPDATE SET status = 'accepted', via_support = true
+         RETURNING (xmax = 0) AS inserted`,
         [supportId, req.userId]
       );
       notifyFriendsChanged(supportId);
+
+      // Only push on a genuinely NEW support contact (xmax = 0 means this row was just
+      // inserted, not merely updated) — avoids spamming the admin every time the same
+      // person reopens the support chat.
+      const isNewContact = upsertResult.rows[0] && upsertResult.rows[0].inserted;
+      if (isNewContact) {
+        sendPushToUser(supportId, {
+          title: 'Новое обращение в поддержку',
+          body: `${req.username} впервые написал(а) в поддержку`,
+          url: '/'
+        });
+      }
     }
 
     res.json({ available: true, id: supportId, username: result.rows[0].username });
@@ -876,6 +889,16 @@ io.on('connection', (socket) => {
   socket.on('webrtc-signal', ({ to, signal }) => {
     if (!to || !signal) return;
     io.to(to).emit('webrtc-signal', { from: socket.id, signal });
+  });
+
+  socket.on('typing', () => {
+    if (!currentRoom || !currentUsername) return;
+    socket.to(currentRoom).emit('typing', { username: currentUsername });
+  });
+
+  socket.on('stop-typing', () => {
+    if (!currentRoom) return;
+    socket.to(currentRoom).emit('stop-typing');
   });
 
   socket.on('leave-room', () => handleLeave());
