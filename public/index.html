@@ -142,10 +142,15 @@
       <div class="controls">
         <button id="toggle-mic" class="control-btn active" title="Микрофон">🎤</button>
         <button id="toggle-cam" class="control-btn" title="Камера">📷</button>
-        <button id="flip-cam" class="control-btn" title="Сменить камеру">🔄</button>
-        <button id="toggle-screen" class="control-btn" title="Демонстрация экрана">🖥️</button>
-        <button id="search-btn" class="control-btn" title="Поиск по сообщениям">🔍</button>
-        <button id="theme-btn-chat" class="control-btn" title="Светлая/тёмная тема">🌙</button>
+        <div class="more-menu-wrap">
+          <button id="more-menu-btn" class="control-btn" title="Ещё">📁</button>
+          <div id="more-menu" class="more-menu hidden">
+            <button type="button" id="flip-cam" class="more-menu-item" title="Сменить камеру">🔄 Сменить камеру</button>
+            <button type="button" id="toggle-screen" class="more-menu-item" title="Демонстрация экрана">🖥️ Демонстрация экрана</button>
+            <button type="button" id="search-btn" class="more-menu-item" title="Поиск по сообщениям">🔍 Поиск по сообщениям</button>
+            <button type="button" id="theme-btn-chat" class="more-menu-item" title="Светлая/тёмная тема">🌙 Сменить тему</button>
+          </div>
+        </div>
         <button id="leave-btn" class="control-btn danger" title="Назад к друзьям">✕</button>
       </div>
     </header>
