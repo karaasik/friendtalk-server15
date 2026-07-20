@@ -1041,12 +1041,25 @@ function createPeerConnection(peerId, username, isInitiator, avatar) {
 
   pc.oniceconnectionstatechange = () => {
     const state = pc.iceConnectionState;
+    setTileStatus(peerId, ICE_STATE_LABELS[state] || state);
     if (state === 'connected' || state === 'completed') {
       peerEntry.connectedOnce = true;
       if (peerEntry.connectTimeout) {
         clearTimeout(peerEntry.connectTimeout);
         peerEntry.connectTimeout = null;
       }
+      // Find out whether the working connection actually needed the TURN relay or found
+      // a direct path — this is the single most useful fact for diagnosing failed calls.
+      pc.getStats().then((stats) => {
+        let pairType = null;
+        stats.forEach((report) => {
+          if (report.type === 'candidate-pair' && report.state === 'succeeded' && (report.nominated || pairType === null)) {
+            const localCand = stats.get(report.localCandidateId);
+            if (localCand && localCand.candidateType) pairType = localCand.candidateType;
+          }
+        });
+        if (pairType) setTileStatus(peerId, `Онлайн (${pairType})`);
+      }).catch(() => {});
     }
     if (peerEntry.reconnectTimer) {
       clearTimeout(peerEntry.reconnectTimer);
@@ -1110,6 +1123,30 @@ function detachSpeakingDetector(tileId) {
   clearInterval(entry.interval);
   try { entry.source.disconnect(); } catch (e) { /* ignore */ }
   speakingDetectors.delete(tileId);
+}
+
+// Small on-tile debug badge showing live ICE connection state — the fastest way to tell
+// whether a failed call ever got past signaling, and whether it used the TURN relay.
+const ICE_STATE_LABELS = {
+  new: 'Соединение…',
+  checking: 'Проверка сети…',
+  connected: 'Онлайн',
+  completed: 'Онлайн',
+  disconnected: 'Обрыв связи…',
+  failed: 'Не удалось соединиться',
+  closed: 'Завершено'
+};
+
+function setTileStatus(peerId, text) {
+  const tile = document.getElementById('tile-' + peerId);
+  if (!tile) return;
+  let badge = tile.querySelector('.ice-status-badge');
+  if (!badge) {
+    badge = document.createElement('div');
+    badge.className = 'ice-status-badge';
+    tile.appendChild(badge);
+  }
+  badge.textContent = text;
 }
 
 function removePeer(peerId) {
