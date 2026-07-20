@@ -1652,6 +1652,26 @@ leaveBtn.addEventListener('click', () => {
   enterFriendsScreen();
 });
 
+// ---------- Collapsible "more" menu (flip camera / screen share / search / theme) ----------
+const moreMenuBtn = document.getElementById('more-menu-btn');
+const moreMenu = document.getElementById('more-menu');
+
+moreMenuBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  moreMenu.classList.toggle('hidden');
+});
+
+document.addEventListener('click', (e) => {
+  if (!moreMenu.classList.contains('hidden') && !moreMenu.contains(e.target) && e.target !== moreMenuBtn) {
+    moreMenu.classList.add('hidden');
+  }
+});
+
+// Close the menu once an action inside it is picked, so it doesn't stay open over the call.
+[flipCamBtn, toggleScreenBtn, searchBtn, themeBtnChat].forEach(btn => {
+  btn.addEventListener('click', () => moreMenu.classList.add('hidden'));
+});
+
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
