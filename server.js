@@ -931,3 +931,14 @@ io.on('connection', (socket) => {
 server.listen(PORT, () => {
   console.log(`FriendTalk server running on port ${PORT}`);
 });
+
+// ---------- Keep-alive self-ping (free Render tier spins down after ~15 min of no HTTP traffic) ----------
+// RENDER_EXTERNAL_URL is set automatically by Render to this service's public URL, so this
+// only runs when actually deployed on Render — not during local development.
+if (process.env.RENDER_EXTERNAL_URL) {
+  const SELF_PING_INTERVAL_MS = 12 * 60 * 1000; // comfortably under the 15-minute spin-down window
+  setInterval(() => {
+    fetch(process.env.RENDER_EXTERNAL_URL).catch(() => { /* a failed ping just retries next interval */ });
+  }, SELF_PING_INTERVAL_MS);
+  console.log('Self-ping enabled — keeping the free Render instance awake.');
+}
